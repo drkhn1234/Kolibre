@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import config, models, schemas, database, auth
 from ..calibre.library import CalibreLibrary
 from ..logging_utils import log_message
-from ..services import widowed_highlights
+from ..services import widowed_highlights, permessi
 from .libraries import NESSUNA_BIBLIOTECA_TUA, resolve_default_library_folder
 router = APIRouter(prefix="/api/kolibre/annotations", tags=["annotations"])
 
@@ -102,7 +102,7 @@ def _serialize_orphan(o: models.OrphanHighlight, device_names: dict = None) -> d
     }
 
 
-def _build_book_meta(highlights: list) -> dict:
+def _build_book_meta(highlights: list, db: Session, current_user: models.User) -> dict:
     """(library, calibre_book_id) -> {"title":..., "author":..., "formats": [...]},
     one CalibreLibrary.list_books() call per library touched, not per highlight."""
     by_library = defaultdict(list)
@@ -111,6 +111,11 @@ def _build_book_meta(highlights: list) -> dict:
 
     book_meta = {}
     for library in by_library:
+        # A person's old annotation must never open another user's private
+        # Calibre metadata, even if the annotation refers to its folder.
+        row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+        if row is None or not permessi.puo_leggere(db, current_user, row):
+            continue
         try:
             lib = CalibreLibrary(config.library_path(library))
             for b in lib.list_books():
@@ -177,7 +182,7 @@ def list_annotations(
     # and-parse work for up to 25 highlights, on the hot read path, until
     # the backlog finally cleared — and there is no need to convert them
     # all when a page opens: that only overloads the page).
-    book_meta = _build_book_meta(hls)
+    book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
         [h.device_id for h in hls] + [o.device_id for o in orphans], db
     )
@@ -215,7 +220,7 @@ def export_annotations(
         .order_by(models.OrphanHighlight.local_path, models.OrphanHighlight.page)
         .all()
     )
-    book_meta = _build_book_meta(hls)
+    book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
         [h.device_id for h in hls] + [o.device_id for o in orphans], db
     )
@@ -278,6 +283,9 @@ def create_annotation(
     biblioteca = payload.library or resolve_default_library_folder(db, current_user)
     if not biblioteca:
         raise HTTPException(status_code=404, detail=NESSUNA_BIBLIOTECA_TUA)
+    row = db.query(models.Library).filter(models.Library.folder_name == biblioteca).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
     highlight = models.Highlight(
         user_id=current_user.id,
         library=biblioteca,
@@ -390,6 +398,9 @@ def suggest_widowed_annotations(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Quali libri presenti in biblioteca contengono il testo di queste note."""
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
     return widowed_highlights.suggest_books(db, library, calibre_book_id, user_id=current_user.id)
 
 
@@ -406,6 +417,9 @@ def repair_widowed_annotations(
     target_book_id = payload.get("target_book_id")
     if not library or book_id is None or target_book_id is None:
         raise HTTPException(status_code=400, detail="library, calibre_book_id e target_book_id sono obbligatori")
+    target_row = db.query(models.Library).filter(models.Library.folder_name == target_library).first()
+    if target_row is None or not permessi.puo_leggere(db, current_user, target_row):
+        raise HTTPException(status_code=404, detail="Library not found")
     spostate = widowed_highlights.repair(db, library, int(book_id), target_library, int(target_book_id), user_id=current_user.id)
     db.commit()
     log_message(

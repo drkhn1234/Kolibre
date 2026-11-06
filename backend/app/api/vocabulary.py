@@ -5,12 +5,15 @@ from sqlalchemy.orm import Session
 
 from .. import auth, config, database, models
 from ..calibre.library import CalibreLibrary
-from ..services import dictionary_service
+from ..services import dictionary_service, permessi
 
 router = APIRouter(prefix="/api/kolibre/vocabulary", tags=["vocabulary"])
 
 
-def _book_title(library: str, calibre_book_id: int):
+def _book_title(library: str, calibre_book_id: int, db: Session, user: models.User):
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if row is None or not permessi.puo_leggere(db, user, row):
+        return None
     try:
         book = CalibreLibrary(config.library_path(library)).get_book(calibre_book_id)
         return book["title"] if book else None
@@ -37,7 +40,7 @@ def _serialize_device_entry(v: models.VocabularyEntry, device_name: str) -> dict
     }
 
 
-def _serialize_web_entry(v: models.WebVocabularyEntry) -> dict:
+def _serialize_web_entry(v: models.WebVocabularyEntry, db: Session, user: models.User) -> dict:
     return {
         "id": f"web:{v.id}",
         "source": "web",
@@ -48,7 +51,7 @@ def _serialize_web_entry(v: models.WebVocabularyEntry) -> dict:
         "source_label": "",
         "word": v.word,
         "highlight": v.highlight,
-        "book_title": _book_title(v.library, v.calibre_book_id),
+        "book_title": _book_title(v.library, v.calibre_book_id, db, user),
         "library": v.library,
         "calibre_book_id": v.calibre_book_id,
         "context_before": v.context_before,
@@ -83,7 +86,7 @@ def list_vocabulary(
     ).all()
 
     items = [_serialize_device_entry(v, name) for v, name in device_rows]
-    items += [_serialize_web_entry(v) for v in web_rows]
+    items += [_serialize_web_entry(v, db, current_user) for v in web_rows]
     items.sort(key=lambda item: item["create_time"] or "", reverse=True)
     return {"items": items}
 
@@ -161,6 +164,9 @@ def add_word_from_reader(
     word = (payload.get("word") or "").strip()
     if not library or not calibre_book_id or not word:
         raise HTTPException(status_code=400, detail="library, calibre_book_id e word sono obbligatori")
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
 
     definition = payload.get("definition")
     definition_source = payload.get("definition_source")

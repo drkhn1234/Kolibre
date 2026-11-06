@@ -110,11 +110,14 @@ def find_widowed_groups(db: Session, user_id: Optional[int] = None) -> List[dict
         ids = esistenti[library]
         if ids is None or book_id in ids:
             continue
-        note = db.query(models.Highlight).filter(
+        note_q = db.query(models.Highlight).filter(
             models.Highlight.library == library,
             models.Highlight.calibre_book_id == book_id,
             models.Highlight.deleted_at.is_(None),
-        ).order_by(models.Highlight.id).all()
+        )
+        if user_id is not None:
+            note_q = note_q.filter(models.Highlight.user_id == user_id)
+        note = note_q.order_by(models.Highlight.id).all()
         capitoli = []
         for n in note:
             if n.chapter and n.chapter not in capitoli:
@@ -227,18 +230,10 @@ def repair(db: Session, library: str, calibre_book_id: int, target_library: str,
     questo libro" e' del resto la verita': il dispositivo ha in mano
     esattamente il libro che si e' appena scelto.
     """
-    from . import book_hash_service
-
-    vecchi = db.query(models.BookHash).filter(
-        models.BookHash.library == library,
-        models.BookHash.calibre_book_id == calibre_book_id,
-    ).all()
-    for riga in vecchi:
-        if riga.file_hash:
-            book_hash_service.record_device_hash(
-                db, target_library, target_book_id, riga.format or "EPUB", riga.file_hash
-            )
-        db.delete(riga)
+    # Repairing a person's annotations must never reassign the shared
+    # server-wide BookHash mapping (which belongs to ALL users). A device
+    # owner can explicitly pair their local file through an owner-scoped
+    # KOReader action instead.
 
     # Solo le proprie: su una biblioteca condivisa, senza questo filtro chi
     # ripara le proprie note vedove spostava anche quelle di tutti gli altri
