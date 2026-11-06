@@ -119,15 +119,32 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 def _decode_token(token: str, db: Session):
+    """Verify a native Kolibre user token or an explicitly linked OIDC token.
+
+    Never trust the unverified external subject, email or username. An
+    RS256 token must pass issuer/audience/signature verification against the
+    configured provider and map to an existing (issuer, subject) pair.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
+        header = jwt.get_unverified_header(token)
+        algorithm = header.get("alg")
+        if algorithm == "RS256":
+            from .services.oidc_identity import OIDCIdentityError, verify_oidc_user
+
+            try:
+                return verify_oidc_user(token, db)
+            except OIDCIdentityError:
+                raise credentials_exception
+        if algorithm != ALGORITHM:
+            raise credentials_exception
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
+        if not isinstance(username, str) or not username:
             raise credentials_exception
     except JWTError:
         raise credentials_exception

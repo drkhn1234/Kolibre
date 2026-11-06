@@ -657,10 +657,31 @@ async def _backfill_highlight_positions_loop() -> None:
         await asyncio.sleep(HIGHLIGHT_POSITION_BACKFILL_INTERVAL_SECONDS)
 
 
+def _migrate_oidc_identities() -> None:
+    """Isolated, idempotent migration: local-user login must remain available.
+
+    A unique (issuer, subject) pair prevents simultaneous mapping of an
+    external identity to two different Kolibre users.
+    """
+    with database.engine.begin() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)")}
+        if "oidc_issuer" not in columns:
+            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN oidc_issuer VARCHAR")
+        if "oidc_subject" not in columns:
+            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN oidc_subject VARCHAR")
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_oidc_identity "
+            "ON users (oidc_issuer, oidc_subject)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.ensure_directories()
     models.Base.metadata.create_all(bind=database.engine)
+    # Identity migration must succeed before any external tokens are accepted:
+    # unlike cosmetic migrations, never silently run without this column.
+    _migrate_oidc_identities()
     # Both migrations are best-effort on purpose. _ensure_schema_migrations is
     # ~60 additive ALTER TABLEs that each already swallow "duplicate column";
     # anything else it raises (a locked db, a column added by a newer build and
