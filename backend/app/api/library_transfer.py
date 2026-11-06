@@ -232,6 +232,7 @@ def get_library_manifest(
 @router.get("/{folder}/fulltext-db")
 def download_library_fulltext_db(
     folder: str,
+    db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     library_path = _require_library(folder, db, current_user)
