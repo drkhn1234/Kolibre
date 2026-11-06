@@ -107,6 +107,20 @@ class PrivateLibraryLifecycleTests(unittest.TestCase):
         self.assertEqual(progress.user_id, 2)
         self.assertEqual(progress.progress, "page-10")
 
+    def test_missing_registry_row_cannot_open_files_even_as_founder(self):
+        with self.assertRaises(HTTPException) as ctx:
+            libraries.default_library_param("hidden_unregistered", self.db, self.admin)
+        self.assertEqual(ctx.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as ctx:
+            libraries.biblioteca_scrivibile("hidden_unregistered", self.db, self.admin)
+        self.assertEqual(ctx.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as ctx:
+            libraries.default_library_param(self.folder, self.db, None)
+        self.assertEqual(ctx.exception.status_code, 401)
+        self.assertEqual(
+            libraries.default_library_param(self.folder, self.db, self.owner), self.folder
+        )
+
     def test_legacy_private_trash_is_fail_closed(self):
         entry = "private_55_legacy_111111"
         (self.trash_root / entry).mkdir()
