@@ -166,6 +166,12 @@ def sync_library_registry(db: Session) -> None:
     for folder_name in sorted(os.listdir(config.LIBRARIES_DIR)):
         if folder_name in known_folder_names or folder_name in deleted_folder_names:
             continue
+        # Personal Calibre libraries are created on disk before registration.
+        # If the process crashes between those steps, never auto-register an
+        # unowned private_* folder as a public/founder-readable library.
+        # Recovery must establish its owner explicitly, out of band.
+        if folder_name.startswith("private_"):
+            continue
         db_path = os.path.join(config.library_path(folder_name), "metadata.db")
         if not os.path.exists(db_path):
             continue
