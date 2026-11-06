@@ -123,6 +123,14 @@ class OIDCUserIdentityTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             auth._decode_token(f"{h}.{p2}.{sig}", self.db)
 
+    def test_access_token_requires_explicit_audience(self):
+        claims = jwt.get_unverified_claims(self.signed())
+        del claims["aud"]
+        token = jwt.encode(claims, self.pem, algorithm="RS256", headers={"kid": "key-1"})
+        with self.assertRaises(HTTPException) as ctx:
+            auth._decode_token(token, self.db)
+        self.assertEqual(ctx.exception.status_code, 401)
+
     def test_oidc_is_disabled_without_required_server_configuration(self):
         with patch.dict(os.environ, {"KOLIBRE_OIDC_ISSUER": ""}):
             with self.assertRaises(HTTPException):

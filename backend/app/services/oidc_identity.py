@@ -7,6 +7,7 @@ Kolibre user; no matching by username, email, display name or admin role.
 from __future__ import annotations
 
 import os
+import ssl
 from urllib.parse import urlsplit
 
 import httpx
@@ -50,6 +51,7 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
             timeout=httpx.Timeout(4.0, connect=2.0),
             follow_redirects=False,
             trust_env=False,
+            verify=ssl.create_default_context(cafile=os.environ.get("KOLIBRE_OIDC_CA_BUNDLE") or None),
         ) as client:
             response = client.get(jwks_uri)
             response.raise_for_status()
@@ -72,7 +74,7 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
             algorithms=["RS256"],
             issuer=issuer,
             audience=audience,
-            options={"require_exp": True},
+            options={"require_exp": True, "require_aud": True, "require_iss": True},
         )
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub or len(sub) > 512:
