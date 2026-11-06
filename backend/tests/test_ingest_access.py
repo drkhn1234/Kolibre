@@ -68,6 +68,88 @@ class IngestIsolationTests(unittest.TestCase):
         self.assertFalse(permessi.puo_modificare(self.db, self.sister, library))
         self.assertFalse(permessi.puo_caricare(self.db, self.third, library))
 
+    def test_founder_cannot_read_or_edit_another_users_private_library(self):
+        private = models.Library(
+            id=30, name="Sister private", folder_name="sister_private",
+            path="/sister_private", owner_id=self.sister.id, is_private=True,
+        )
+        self.db.add(private)
+        self.db.commit()
+        self.assertTrue(permessi.puo_leggere(self.db, self.sister, private))
+        for operation in (
+            permessi.puo_leggere, permessi.puo_modificare,
+            permessi.puo_caricare, permessi.puo_condividere,
+            permessi.puo_gestire_permessi, permessi.puo_cancellare,
+        ):
+            self.assertFalse(operation(self.db, self.founder, private))
+            self.assertFalse(operation(self.db, self.admin, private))
+        self.assertNotIn(
+            private.id, {row.id for row in permessi.biblioteche_visibili(self.db, self.founder)}
+        )
+        self.assertIn(
+            private.id, {row.id for row in permessi.biblioteche_visibili(self.db, self.sister)}
+        )
+
+    def test_private_upload_creates_personal_destination(self):
+        from unittest.mock import patch
+        from app.services.ingest_access import require_ingest_destination
+        private_upload = models.IngestedBook(
+            id=14, uploader_id=self.sister.id, is_private=True,
+            file_path="/private", filename="private.epub", file_format="EPUB", title="Private",
+        )
+        self.db.add(private_upload)
+        self.db.commit()
+        with patch("app.services.ingest_access.CalibreLibrary") as calibre:
+            destination = require_ingest_destination(self.db, self.sister, private_upload, "shared")
+            again = require_ingest_destination(self.db, self.sister, private_upload, "shared")
+        self.assertEqual(destination, again)
+        self.assertEqual(calibre.call_count, 1)
+        row = self.db.query(models.Library).filter(
+            models.Library.folder_name == destination
+        ).one()
+        self.assertTrue(row.is_private)
+        self.assertEqual(row.owner_id, self.sister.id)
+        self.assertFalse(permessi.puo_leggere(self.db, self.founder, row))
+
+    def test_shared_upload_remains_shared_and_requires_can_upload(self):
+        from app.services.ingest_access import require_ingest_destination
+        shared = models.Library(
+            id=40, name="Shared", folder_name="shared", path="/shared",
+            owner_id=self.founder.id, is_private=False, sort_order=0,
+        )
+        self.db.add(shared)
+        self.db.add(models.LibraryPermission(
+            user_id=self.sister.id, library_id=40, can_upload=True, can_edit=False,
+        ))
+        self.db.commit()
+        staged = models.IngestedBook(
+            id=15, uploader_id=self.sister.id, is_private=False,
+            file_path="/shared_upload", filename="shared.epub", file_format="EPUB", title="Shared book",
+        )
+        self.assertEqual(
+            require_ingest_destination(self.db, self.sister, staged, None),
+            "shared",
+        )
+        with self.assertRaises(HTTPException) as exc:
+            require_ingest_destination(self.db, self.third, staged, None)
+        self.assertEqual(exc.exception.status_code, 403)
+
+    def test_opds_library_cannot_be_queried_by_founder(self):
+        from app.api.opds import _get_library_row, _list_library_rows
+        library = models.Library(
+            id=50, name="Other private", folder_name="private_other",
+            path="/other", owner_id=self.sister.id, is_private=True,
+        )
+        self.db.add(library)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as exc:
+            _get_library_row(self.db, "private_other", self.founder)
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(
+            _get_library_row(self.db, "private_other", self.sister).id, library.id
+        )
+        self.assertEqual(_list_library_rows(self.db, self.founder), [])
+
 
 if __name__ == "__main__":
     unittest.main()
