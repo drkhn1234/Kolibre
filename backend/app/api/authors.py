@@ -62,7 +62,7 @@ def _anagrafica(row: models.AuthorMetadata) -> dict:
     }
 
 
-def _author_book_counts(solo_libreria: str = None) -> dict:
+def _author_book_counts(solo_libreria: str = None, allowed: set[str] | None = None) -> dict:
     """
     Nome autore -> numero di libri, sommato su tutte le librerie vive.
     Estratta da list_authors perche' ora la usa anche scrape_missing_authors
@@ -73,6 +73,8 @@ def _author_book_counts(solo_libreria: str = None) -> dict:
     if not os.path.exists(config.LIBRARIES_DIR):
         return counts
     for d in os.listdir(config.LIBRARIES_DIR):
+        if allowed is not None and d not in allowed:
+            continue
         if solo_libreria and d != solo_libreria:
             continue
         library_dir = config.library_path(d)
@@ -97,7 +99,7 @@ def _author_book_counts(solo_libreria: str = None) -> dict:
 
 
 @router.get("")
-def list_authors(library: str = None, db: Session = Depends(database.get_db)):
+def list_authors(library: str = None, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Distinct author names across every known library, with their total book
     count, total estimated page count and (if already scraped) their cached
@@ -112,21 +114,16 @@ def list_authors(library: str = None, db: Session = Depends(database.get_db)):
     most once per batch of changes: only when the cache is missing or
     dirty, never on every request.
     """
-    counts = _author_book_counts(library)
-
-    if library:
-        # Con un filtro non si usa la cache: quella somma TUTTE le
-        # biblioteche, ed e' proprio la somma che qui non si vuole. Il conto
-        # diretto costa quanto ricostruire la cache per quella sola
-        # biblioteca, cioe' poco.
-        pages_totals = author_stats_service.compute_author_total_pages(library)
-    else:
-        pages_cache = db.query(models.AuthorPagesCache).first()
-        pages_totals = (
-            json.loads(pages_cache.pages_json)
-            if pages_cache and not pages_cache.dirty
-            else author_stats_service.refresh_author_pages_cache(db)
-        )
+    allowed = {row.folder_name for row in permessi.biblioteche_visibili(db, current_user)}
+    if library and library not in allowed:
+        raise HTTPException(status_code=404, detail="Library not found")
+    counts = _author_book_counts(library, allowed=allowed)
+    # Global pages cache includes other people's private libraries, so never
+    # use it in an account-scoped endpoint.
+    pages_totals = {}
+    for folder in ([library] if library else sorted(allowed)):
+        for name, pages in author_stats_service.compute_author_total_pages(folder).items():
+            pages_totals[name] = pages_totals.get(name, 0) + pages
 
     # Una query sola per tutti: l'anagrafica serve sia alle colonne della
     # tabella autori sia alle statistiche, e prenderla per nome uno alla volta
@@ -154,7 +151,7 @@ def list_authors(library: str = None, db: Session = Depends(database.get_db)):
 # qui sotto per image-search: "scrape-missing" verrebbe altrimenti letto come
 # il nome di un autore.
 @router.post("/scrape-missing")
-def scrape_missing_authors(force: bool = False, db: Session = Depends(database.get_db)):
+def scrape_missing_authors(force: bool = False, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Avvia sul SERVER il recupero Wikipedia, scegliendo su CHI vale la pena
     lavorare adesso.
@@ -180,7 +177,8 @@ def scrape_missing_authors(force: bool = False, db: Session = Depends(database.g
     ne' un cambio pagina ne' una seconda scheda possono azzerarla.
     """
     now = datetime.utcnow()
-    all_names = sorted(_author_book_counts().keys())
+    allowed = {row.folder_name for row in permessi.biblioteche_visibili(db, current_user)}
+    all_names = sorted(_author_book_counts(allowed=allowed).keys())
     meta = {
         row.author_name: row
         for row in db.query(models.AuthorMetadata).filter(
@@ -294,7 +292,11 @@ def search_author_images(q: str):
 
 
 @router.get("/{name}/books")
-def get_author_books(name: str, library: str = None):
+def get_author_books(
+    name: str, library: str = None,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
     """
     An author's books across every library on the server — the "Autori" page
     is a single global view (list_authors above already aggregates this way),
@@ -304,7 +306,10 @@ def get_author_books(name: str, library: str = None):
     results = []
     if not os.path.exists(config.LIBRARIES_DIR):
         return results
-    for folder_name in os.listdir(config.LIBRARIES_DIR):
+    allowed = {row.folder_name for row in permessi.biblioteche_visibili(db, current_user)}
+    if library and library not in allowed:
+        raise HTTPException(status_code=404, detail="Library not found")
+    for folder_name in sorted(allowed):
         # Con un filtro attivo la scheda dell'autore mostra solo i libri di
         # quella biblioteca: chi ha scelto "autori di X" non si aspetta di
         # trovare, aprendo un autore, libri che in X non ci sono.
@@ -344,6 +349,7 @@ def get_author_reading_stats(
     name: str,
     library: str = None,
     db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Quanto e' stato letto DI questo autore.
@@ -366,7 +372,7 @@ def get_author_reading_stats(
     cancellare due file, non districare un campo da una risposta che serve
     ad altro.
     """
-    libri = get_author_books(name, library)
+    libri = get_author_books(name, library, db, current_user)
     if not libri:
         return {
             "books_owned": 0, "books_read": 0, "books_marked_read": 0,
@@ -386,6 +392,7 @@ def get_author_reading_stats(
     for folder, ids in per_biblioteca.items():
         caratteri_per_libro = stats_service._chars_map(db, folder)
         for s in db.query(models.ReadingSession).filter(
+            models.ReadingSession.user_id == current_user.id,
             models.ReadingSession.library == folder,
             models.ReadingSession.calibre_book_id.in_(ids),
         ).all():
@@ -401,6 +408,7 @@ def get_author_reading_stats(
                 ultimo = s.start_time
 
         evidenziazioni += db.query(models.Highlight).filter(
+            models.Highlight.user_id == current_user.id,
             models.Highlight.library == folder,
             models.Highlight.calibre_book_id.in_(ids),
         ).count()
