@@ -1,6 +1,6 @@
 # Multi-user privacy: shared/private uploads and book relocation
 
-**Status: draft, not production-ready.** This fork implements shared-by-default uploads, opt-in private
+**Status: draft, not production-ready.** See [the multi-user authorization audit](MULTIUSER_AUTH_AUDIT.md) for verified endpoints, regressions, remaining trust boundaries, and known gaps. This fork implements shared-by-default uploads, opt-in private
 uploads, and manual shared-to-private book relocation. It does not implement
 end-to-end encryption or secure multi-tenant RAG.
 
@@ -73,6 +73,33 @@ end-to-end encryption or secure multi-tenant RAG.
   scraping.
 - GitHub Actions compiles the Python backend, runs cross-user isolation
   and crash-recovery tests, and builds the React frontend.
+
+## Milestone 4: cross-user authorization hardening
+
+The audit uncovered and closed several indirect paths that bypassed ordinary
+library permissions:
+
+- A founder/admin could re-import another user's managed/private Calibre
+  directory through a second zero-copy library name.
+- Private libraries lost their `is_private` and `owner_id` when restored
+  from admin-visible trash. Private trash now records the original owner and
+  is inaccessible through the application to anyone else.
+- Device fingerprint pairing and queued overwrites could point at another
+  person's private library through supplied identifiers.
+- Global orphan-reading-statistics pairing/discard by MD5 could relocate or
+  delete other users' reading sessions. Decisions are now per-user, and
+  historical global decisions are intentionally not reused.
+- Annotations' widowed-note excerpts read all users' notes after choosing
+  a single user's book group. The note query now filters by user too.
+- Annotation repairs and vocabulary/title lookups were able to open
+  unauthorized libraries. Shared-server hash mappings are no longer
+  reassigned by personal annotation repair.
+- Raw multi-user logs are no longer exposed through the admin HTTP API.
+- Unregistered library folders, missing identity and directory traversal
+  are rejected at the shared access/path boundary.
+- Real two-principal HTTP integration tests use temporary Calibre SQLite
+  libraries to exercise the FastAPI dependency chain and verify cross-user
+  denials. More device/OPDS integration remains to be tested.
 
 ## Explicitly not completed / required before deployment
 
