@@ -272,6 +272,7 @@ def list_libraries(
             # Cosa puo' farci chi sta guardando: serve al frontend per
             # nascondere i comandi invece di offrirli e poi rispondere 403.
             "canEdit": permessi.puo_modificare(db, current_user, row),
+            "canUpload": permessi.puo_caricare(db, current_user, row),
             "canShare": permessi.puo_condividere(db, current_user, row),
             "canDelete": permessi.puo_cancellare(db, current_user, row),
             "fulltextEnabled": app_settings.is_fulltext_enabled(db, row.folder_name),
@@ -1012,7 +1013,7 @@ def library_permissions(
         "condivisioni": [
             {
                 "user_id": p.user_id, "username": nomi.get(p.user_id),
-                "can_edit": p.can_edit, "can_share": p.can_share, "can_manage": p.can_manage,
+                "can_edit": p.can_edit, "can_upload": p.can_upload, "can_share": p.can_share, "can_manage": p.can_manage,
             }
             for p in condivisioni if nomi.get(p.user_id)
         ],
@@ -1067,6 +1068,7 @@ def set_library_permission(
     puo_gestire = permessi.puo_gestire_permessi(db, current_user, riga)
     voluto = {
         "can_edit": bool(payload.get("can_edit")),
+        "can_upload": bool(payload.get("can_upload")),
         "can_share": bool(payload.get("can_share")),
         "can_manage": bool(payload.get("can_manage")),
     }
@@ -1085,6 +1087,11 @@ def set_library_permission(
         )
     # E non lo si da' a se' stessi: con can_share ci si scriveva la propria
     # riga di permesso e ci si aggiungeva can_edit.
+    if voluto["can_upload"] and not permessi.puo_caricare(db, current_user, riga):
+        raise HTTPException(
+            status_code=403,
+            detail="Non puoi concedere il permesso di caricare libri senza possederlo.",
+        )
     if destinatario.id == current_user.id and not puo_gestire:
         raise HTTPException(
             status_code=403,

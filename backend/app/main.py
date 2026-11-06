@@ -230,6 +230,13 @@ def _ensure_schema_migrations() -> None:
                 conn.exec_driver_sql(ddl)
                 log_message("info", "system", f"Migrated users: added missing '{col}' column.")
 
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(library_permissions)")}
+        if "can_upload" not in existing:
+            conn.exec_driver_sql(
+                "ALTER TABLE library_permissions ADD COLUMN can_upload BOOLEAN NOT NULL DEFAULT 0"
+            )
+        conn.commit()
+
         existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(libraries)")}
         if "owner_id" not in existing:
             conn.exec_driver_sql("ALTER TABLE libraries ADD COLUMN owner_id INTEGER")
@@ -408,11 +415,13 @@ def _ensure_schema_migrations() -> None:
             ("series_index", "ALTER TABLE ingested_books ADD COLUMN series_index FLOAT"),
             ("language", "ALTER TABLE ingested_books ADD COLUMN language VARCHAR"),
             ("isbn", "ALTER TABLE ingested_books ADD COLUMN isbn VARCHAR"),
+            ("uploader_id", "ALTER TABLE ingested_books ADD COLUMN uploader_id INTEGER"),
         )
         for col, ddl in ingested_book_columns:
             if col not in existing:
                 conn.exec_driver_sql(ddl)
                 log_message("info", "system", f"Migrated ingested_books: added missing '{col}' column.")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_ingested_books_uploader_id ON ingested_books (uploader_id)")
         conn.commit()
 
         # Esito dello scraping autori, per non ritentare alla cieca — vedi

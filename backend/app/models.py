@@ -840,6 +840,8 @@ class LibraryPermission(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     library_id = Column(Integer, ForeignKey("libraries.id", ondelete="CASCADE"), nullable=False, index=True)
     can_edit = Column(Boolean, default=False, nullable=False)
+    # Contribute books without permission to edit or delete existing entries.
+    can_upload = Column(Boolean, default=False, nullable=False)
     # Condividere a sua volta: dare a un terzo l'accesso che si ha.
     can_share = Column(Boolean, default=False, nullable=False)
     # Gestire i permessi ALTRUI su questa biblioteca — piu' di condividere:
@@ -870,6 +872,9 @@ class IngestedBook(Base):
     __tablename__ = "ingested_books"
 
     id = Column(Integer, primary_key=True, index=True)
+    # NULL identifies trusted watcher/legacy staging. No FK: deleting an
+    # account must not turn its private staged items into trusted imports.
+    uploader_id = Column(Integer, nullable=True, index=True)
     file_path = Column(String, nullable=False)
     filename = Column(String, nullable=False)
     file_format = Column(String, nullable=False)

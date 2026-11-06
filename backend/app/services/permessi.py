@@ -72,6 +72,14 @@ def puo_modificare(db: Session, utente: models.User, biblioteca: models.Library)
     return bool(riga and riga.can_edit)
 
 
+def puo_caricare(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
+    """Upload permission is independent from editing existing catalog entries."""
+    if utente.is_founder or biblioteca.owner_id == utente.id:
+        return True
+    riga = _permesso(db, utente.id, biblioteca.id)
+    return bool(riga and (riga.can_upload or riga.can_edit))
+
+
 def puo_condividere(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
