@@ -66,12 +66,14 @@ class OIDCUserIdentityTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+        real_httpx_client = httpx.Client
+
         def fake_client(*args, **kwargs):
             transport = httpx.MockTransport(
                 lambda req: httpx.Response(200, json=self.jwks)
                 if str(req.url) == JWKS_URI else httpx.Response(404)
             )
-            return httpx.Client(transport=transport, **{
+            return real_httpx_client(transport=transport, **{
                 k: v for k, v in kwargs.items() if k != "transport"
             })
 
