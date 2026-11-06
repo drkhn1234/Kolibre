@@ -29,7 +29,7 @@ who controls the server runtime. End-to-end encryption is deferred.
 |---|---|---|
 | Shared/private library visibility | Founder cannot access other users' private Calibre libraries; upload permission independent of edit | `test_ingest_access.py` |
 | Staging / bulk import | Per-user staging paths and item ownership; destination authorization before write; owner-only job control | `test_ingest_access.py` |
-| Zero-copy library import | Reject managed library roots, their symlink aliases and trash as import sources | `test_private_library_lifecycle.py` |
+| Zero-copy library import | Reject managed library roots, their symlink aliases and trash as import sources; unregistered `private_*` folders are not auto-registered as shared after a crash | `test_private_library_lifecycle.py` |
 | Library trash / restore | Private trash ownership recorded before moving; founder cannot list, purge, or restore; restored library stays private | `test_private_library_lifecycle.py` |
 | Central read/write gate | Reject missing identity and unknown/unregistered folder names | `test_private_library_lifecycle.py` |
 | Calibre paths | Reject `../`, absolute locations, embedded separators and NUL | `test_library_path_validation.py` |
@@ -39,7 +39,7 @@ who controls the server runtime. End-to-end encryption is deferred.
 | Annotation/vocabulary metadata | Cannot open foreign private library to look up title, suggest repair, add a word, or reassign a global BookHash during personal note repair | `test_personal_content_acl.py` |
 | Entity/library maintenance | Explicit per-library operations use the same ACL as all-library operations | `test_user_stats_isolation.py` |
 | Administrator application logs | Raw logs unavailable in multi-user mode; log redaction alone is insufficient | `test_user_stats_isolation.py` |
-| HTTP dependency integration | Real throwaway Calibre metadata.db files, two test principals, FastAPI dependency resolution and cross-user GET/POST | `test_two_user_http_isolation.py` |
+| HTTP dependency integration | Real throwaway Calibre metadata.db files, two test principals, FastAPI dependency resolution, HTTP Basic OPDS access and cross-user GET/POST | `test_two_user_http_isolation.py` |
 | Private book relocation | Owner-only reading-history migration, journal, atomic recovery marker and conservative reconciliation | `test_private_book_*.py`, `test_private_move_marker.py` |
 
 The CI workflow compiles Python, executes all `test_*.py` privacy regression
