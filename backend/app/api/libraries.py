@@ -418,10 +418,21 @@ def import_library(
     if not name or not path:
         raise HTTPException(status_code=400, detail="Name and path required")
 
+    # Importing the on-disk path of a private library as a new shared
+    # symlink must never bypass ownership, including for the founder.
+    # Disallow re-import of ANY already-managed Calibre library. An external
+    # import may point to a wholly separate, previously unregistered folder.
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise HTTPException(status_code=400, detail="An absolute library path is required")
+    canonical = os.path.realpath(path)
+    forbidden_roots = [os.path.realpath(config.LIBRARIES_DIR), os.path.realpath(TRASH_DIR)]
+    forbidden_roots += [os.path.realpath(row.path) for row in db.query(models.Library).all()]
+    for root in forbidden_roots:
+        if canonical == root or canonical.startswith(root + os.sep):
+            raise HTTPException(status_code=403, detail="Managed libraries cannot be re-imported")
     folder_name = name.lower().replace(" ", "_")
     if db.query(models.Library).filter(models.Library.folder_name == folder_name).first():
         raise HTTPException(status_code=409, detail="Una libreria con questo nome esiste già")
-
     db_path = os.path.join(path, "metadata.db")
     if not os.path.exists(db_path):
         CalibreLibrary(path, crea=True)  # bootstraps a fresh Calibre-compatible metadata.db in place
@@ -451,6 +462,7 @@ def import_library(
 
     db.add(models.Library(
         name=name, folder_name=folder_name, path=target_link, sort_order=_next_sort_order(db),
+        owner_id=current_user.id,
     ))
     _clear_deletion_tombstone(db, folder_name)
     db.commit()
@@ -472,6 +484,30 @@ def _trash_entry_path(entry: str) -> str:
     return path
 
 
+def _trash_record(db: Session, entry: str) -> models.TrashedLibrary | None:
+    return db.query(models.TrashedLibrary).filter(
+        models.TrashedLibrary.entry == entry
+    ).first()
+
+
+def _can_manage_trash(db: Session, entry: str, user: models.User) -> bool:
+    """Private trash is owner-only, including when caller is founder/admin."""
+    row = _trash_record(db, entry)
+    if row and row.is_private:
+        return row.owner_id == user.id
+    # Legacy private folders created before the journal were named
+    # private_<owner_id>_<random>; fail closed rather than making them public.
+    if row is None and entry.startswith("private_"):
+        return False
+    return bool(user.is_admin or user.is_founder)
+
+
+def _require_trash_access(db: Session, entry: str, user: models.User) -> models.TrashedLibrary | None:
+    if not _can_manage_trash(db, entry, user):
+        raise HTTPException(status_code=404, detail="Trash entry not found")
+    return _trash_record(db, entry)
+
+
 def _dir_size_bytes(path: str) -> int:
     total = 0
     for root, _dirs, files in os.walk(path):
@@ -484,7 +520,10 @@ def _dir_size_bytes(path: str) -> int:
 
 
 @router.get("/trash")
-def list_trashed_libraries(_chi: models.User = Depends(auth.get_current_active_admin)):
+def list_trashed_libraries(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
     """
     Contents of _trash_libraries — folders moved there by delete_library/
     import_library instead of being deleted outright (see TRASH_DIR's own
@@ -497,6 +536,8 @@ def list_trashed_libraries(_chi: models.User = Depends(auth.get_current_active_a
         return {"items": []}
     items = []
     for entry in sorted(os.listdir(TRASH_DIR)):
+        if not _can_manage_trash(db, entry, current_user):
+            continue
         full_path = os.path.join(TRASH_DIR, entry)
         if not os.path.isdir(full_path):
             continue
@@ -528,7 +569,7 @@ def restore_trashed_library(
     # Come il purge accanto: il cestino contiene biblioteche di chiunque, e
     # elencarle o farne rinascere una non puo' essere alla portata di ogni
     # account. Il purge il controllo ce l'aveva, questi due no.
-    _chi: models.User = Depends(auth.get_current_active_admin),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     The reverse of delete_library: moves a trashed folder back to its
@@ -538,11 +579,12 @@ def restore_trashed_library(
     overwriting whatever is there now would be exactly the kind of
     "eliminates real files with no undo" mistake TRASH_DIR exists to avoid.
     """
+    record = _require_trash_access(db, entry, current_user)
     trash_path = _trash_entry_path(entry)
     if not os.path.isdir(trash_path):
         raise HTTPException(status_code=404, detail="Voce del cestino non trovata")
 
-    folder_name = entry.rpartition("_")[0]
+    folder_name = record.folder_name if record else entry.rpartition("_")[0]
     if not folder_name:
         raise HTTPException(status_code=400, detail="Impossibile ricostruire il nome della libreria da questa voce")
     if db.query(models.Library).filter(models.Library.folder_name == folder_name).first():
@@ -570,10 +612,17 @@ def restore_trashed_library(
         folder_name=folder_name,
         path=target_path,
         sort_order=_next_sort_order(db),
+        owner_id=record.owner_id if record else current_user.id,
+        is_private=bool(record and record.is_private),
     ))
+    if record:
+        db.delete(record)
     _clear_deletion_tombstone(db, folder_name)
     db.commit()
-    log_message("info", "libraries", f"Restored library '{folder_name}' from trash entry '{entry}'")
+    if record and record.is_private:
+        log_message("info", "libraries", "Owner restored private library from trash")
+    else:
+        log_message("info", "libraries", f"Restored library '{folder_name}' from trash entry '{entry}'")
     background_tasks.add_task(_recompute_after_import, folder_name, request.app.state.write_queue)
     return {"status": "ok", "folder_name": folder_name}
 
@@ -581,18 +630,26 @@ def restore_trashed_library(
 @router.delete("/trash/{entry}")
 def purge_trashed_library(
     entry: str,
-    _admin: models.User = Depends(auth.get_current_active_admin),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """Permanent, unrecoverable delete of one trash entry — the action
     TRASH_DIR was always missing a way to actually perform.
 
     Riservato a un amministratore: e' l'unica cancellazione del progetto
     da cui non si torna indietro."""
+    record = _require_trash_access(db, entry, current_user)
     trash_path = _trash_entry_path(entry)
     if not os.path.isdir(trash_path):
         raise HTTPException(status_code=404, detail="Voce del cestino non trovata")
     shutil.rmtree(trash_path)
-    log_message("warning", "libraries", f"Permanently deleted trash entry '{entry}' ({trash_path})")
+    if record:
+        db.delete(record)
+        db.commit()
+    if record and record.is_private:
+        log_message("warning", "libraries", "Owner permanently deleted private trash entry")
+    else:
+        log_message("warning", "libraries", f"Permanently deleted trash entry '{entry}'")
     return {"status": "ok"}
 
 
@@ -945,7 +1002,7 @@ def delete_library(
     if not (os.path.exists(lib_path) or os.path.lexists(lib_path)) and not row:
         raise HTTPException(status_code=404, detail="Library not found")
     if row is None or not permessi.puo_cancellare(db, current_user, row):
-        raise HTTPException(status_code=403, detail=f"Solo il proprietario può cancellare '{row.name}'.")
+        raise HTTPException(status_code=403, detail="Only the library owner can delete this library")
 
     if os.path.islink(lib_path):
         # Zero-copy imported library: the real data lives elsewhere, untouched.
@@ -957,9 +1014,20 @@ def delete_library(
         # a timestamped trash folder instead of shutil.rmtree; recoverable
         # manually until an admin empties the trash for real.
         os.makedirs(TRASH_DIR, exist_ok=True)
-        trashed_path = os.path.join(TRASH_DIR, f"{folder_name}_{int(time.time())}")
+        trash_entry = f"{folder_name}_{int(time.time())}"
+        trashed_path = os.path.join(TRASH_DIR, trash_entry)
+        if os.path.exists(trashed_path):
+            raise HTTPException(status_code=409, detail="Trash entry already exists")
+        db.add(models.TrashedLibrary(
+            entry=trash_entry, folder_name=folder_name,
+            owner_id=row.owner_id, is_private=bool(row.is_private),
+        ))
+        db.commit()  # Record ownership before the filesystem move.
         shutil.move(lib_path, trashed_path)
-        log_message("warning", "libraries", f"Library '{name}' moved to trash: {trashed_path}")
+        if row.is_private:
+            log_message("warning", "libraries", "Owner moved private library to trash")
+        else:
+            log_message("warning", "libraries", f"Library '{name}' moved to trash")
 
     # A fresh, empty folder holding ONLY the tombstone marker (see
     # bootstrap_library) — without this, the very next plain CalibreLibrary(...)
@@ -984,9 +1052,11 @@ def delete_library(
     # again for this folder_name.
     db.query(models.BookHash).filter(models.BookHash.library == folder_name).delete()
     db.query(models.DeviceBook).filter(models.DeviceBook.library == folder_name).delete()
-    db.query(models.ReadingPosition).filter(models.ReadingPosition.library == folder_name).delete()
-    db.query(models.ReadingSession).filter(models.ReadingSession.library == folder_name).delete()
-    purge_orphans_for_library(db, folder_name)
+    if not row.is_private:
+        db.query(models.ReadingPosition).filter(models.ReadingPosition.library == folder_name).delete()
+        db.query(models.ReadingSession).filter(models.ReadingSession.library == folder_name).delete()
+        purge_orphans_for_library(db, folder_name)
+    # A private trash restore must preserve its owner's reading history.
 
     if row:
         db.delete(row)
@@ -995,7 +1065,10 @@ def delete_library(
     db.commit()
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    log_message("info", "libraries", f"Deleted library: {name}")
+    if row.is_private:
+        log_message("info", "libraries", "Owner deleted private library")
+    else:
+        log_message("info", "libraries", f"Deleted library: {name}")
     return {"status": "ok"}
 
 

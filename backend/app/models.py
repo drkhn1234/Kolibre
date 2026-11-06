@@ -869,6 +869,22 @@ class DeletedLibraryFolder(Base):
     deleted_at = Column(DateTime, default=datetime.utcnow)
 
 
+class TrashedLibrary(Base):
+    """Deleted library ownership, not an admin-readable restored library.
+
+    New private trash entries remain accessible solely to their original
+    owner. No FK: account deletion must not strip ownership information.
+    """
+    __tablename__ = "trashed_libraries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entry = Column(String, unique=True, nullable=False, index=True)
+    folder_name = Column(String, nullable=False)
+    owner_id = Column(Integer, nullable=True, index=True)
+    is_private = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class IngestedBook(Base):
     """A file detected in the ingest/watched folder, staged for review before import."""
     __tablename__ = "ingested_books"
