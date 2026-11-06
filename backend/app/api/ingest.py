@@ -378,7 +378,7 @@ def discard_ingest_item(
     return {"status": "ok"}
 
 
-def _open_ingest_destination(filename: str):
+def _open_ingest_destination(filename: str, destination_dir: str | None = None):
     """
     Returns an (open binary file handle, absolute path) pair for a new file in
     the ingest folder. Uses exclusive creation ("xb") in a retry loop so two
@@ -389,7 +389,7 @@ def _open_ingest_destination(filename: str):
     candidate = filename
     counter = 2
     while True:
-        dest_path = os.path.join(config.INGEST_DIR, candidate)
+        dest_path = os.path.join(destination_dir or config.INGEST_DIR, candidate)
         try:
             return open(dest_path, "xb"), dest_path
         except FileExistsError:
@@ -413,7 +413,10 @@ async def upload_ingest_files(
     (services/library_scanner.EBOOK_EXTENSIONS); the watcher itself stages any
     non-hidden file, so this is the stricter, user-facing gate.
     """
-    os.makedirs(config.INGEST_DIR, exist_ok=True)
+    # Store web uploads outside the watched root; the watcher is non-recursive.
+    # Ownership is attached synchronously by the HTTP request, without races.
+    upload_dir = os.path.join(config.INGEST_DIR, "_web_uploads", str(current_user.id))
+    os.makedirs(upload_dir, exist_ok=True)
     staged = []
     rejected = []
 
@@ -433,11 +436,7 @@ async def upload_ingest_files(
             })
             continue
 
-        # Files beginning with a dot are ignored by the filesystem watcher.
-        # Keep an upload private during transfer, then publish the final path
-        # only once the staging record can be attributed to its uploader.
-        out_handle, hidden_path = _open_ingest_destination("." + original_name)
-        dest_path = None
+        out_handle, dest_path = _open_ingest_destination(original_name, upload_dir)
         size = 0
         too_big = False
         try:
@@ -451,27 +450,22 @@ async def upload_ingest_files(
         except Exception:
             # Partial write (client disconnect, disk error): don't leave a
             # truncated file behind for the watcher to stage.
-            if os.path.exists(hidden_path):
-                os.remove(hidden_path)
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
             raise
         finally:
             await upload.close()
 
         if too_big:
-            os.remove(hidden_path)
+            os.remove(dest_path)
             rejected.append({
                 "filename": original_name,
                 "reason": f"File troppo grande: il limite è {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB per file",
             })
             continue
 
-        # Mark ownership in the database before publishing a file to the
-        # watched directory. stage_ingest_file ignores dot-prefixed files.
-        # A unique visible basename prevents collisions with other uploads.
+        # No filesystem watcher can race to assign a NULL owner.
         try:
-            visible_handle, dest_path = _open_ingest_destination(original_name)
-            visible_handle.close()
-            os.replace(hidden_path, dest_path)
             stage_ingest_file(db, dest_path, uploader_id=current_user.id)
             item = (
                 db.query(models.IngestedBook)
@@ -479,9 +473,8 @@ async def upload_ingest_files(
                 .first()
             )
         except Exception:
-            for path in (hidden_path, dest_path):
-                if path and os.path.exists(path):
-                    os.remove(path)
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
             raise
         if item is None:
             # Shouldn't happen for a regular file we just wrote; clean up so the
