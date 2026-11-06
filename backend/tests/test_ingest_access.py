@@ -25,7 +25,7 @@ class IngestIsolationTests(unittest.TestCase):
         ])
         self.db = Session(self.engine)
         self.founder = SimpleNamespace(id=1, is_founder=True)
-        self.sister = SimpleNamespace(id=2, is_founder=False)
+        self.sister = SimpleNamespace(id=2, username="sister", is_founder=False)
         self.third = SimpleNamespace(id=3, is_founder=False)
         self.admin = SimpleNamespace(id=4, is_founder=False, is_admin=True)
         self.db.add_all([
