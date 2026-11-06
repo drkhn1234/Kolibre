@@ -80,6 +80,7 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             patch("app.api.library_transfer.os.path.getsize", return_value=32),
             patch("app.api.library_transfer.shutil.copyfile"),
             patch("app.api.library_transfer.book_hash_service.upsert_book_hash"),
+            patch("app.api.library_transfer.author_ingest_hook.maybe_trigger_wiki_scrape"),
             patch("app.api.library_transfer.ensure_private_library",
                   return_value=self.db.query(models.Library).filter_by(folder_name="private_owner").one()) as ensure_private,
             patch("app.api.library_transfer.CalibreLibrary") as cls,
