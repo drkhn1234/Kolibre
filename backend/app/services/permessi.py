@@ -45,8 +45,8 @@ def biblioteche_visibili(db: Session, utente: models.User) -> list:
     quelle su cui hanno una riga di permesso: l'esistenza della riga E' il
     permesso di leggere.
     """
-    if utente.is_founder:
-        return db.query(models.Library).order_by(models.Library.sort_order, models.Library.id).all()
+    # A founder can administer the installation without inheriting access to
+    # other users' private books. Private ownership is never delegated.
     condivise = {
         p.library_id for p in db.query(models.LibraryPermission).filter(
             models.LibraryPermission.user_id == utente.id
@@ -55,17 +55,22 @@ def biblioteche_visibili(db: Session, utente: models.User) -> list:
     return [
         row for row in db.query(models.Library)
         .order_by(models.Library.sort_order, models.Library.id).all()
-        if row.owner_id == utente.id or row.id in condivise
+        if (row.is_private and row.owner_id == utente.id)
+        or (not row.is_private and (utente.is_founder or row.owner_id == utente.id or row.id in condivise))
     ]
 
 
 def puo_leggere(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
+    if biblioteca.is_private:
+        return biblioteca.owner_id == utente.id
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
     return _permesso(db, utente.id, biblioteca.id) is not None
 
 
 def puo_modificare(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
+    if biblioteca.is_private:
+        return biblioteca.owner_id == utente.id
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
     riga = _permesso(db, utente.id, biblioteca.id)
@@ -74,6 +79,8 @@ def puo_modificare(db: Session, utente: models.User, biblioteca: models.Library)
 
 def puo_caricare(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
     """Upload permission is independent from editing existing catalog entries."""
+    if biblioteca.is_private:
+        return biblioteca.owner_id == utente.id
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
     riga = _permesso(db, utente.id, biblioteca.id)
@@ -81,6 +88,8 @@ def puo_caricare(db: Session, utente: models.User, biblioteca: models.Library) -
 
 
 def puo_condividere(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
+    if biblioteca.is_private:
+        return biblioteca.owner_id == utente.id
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
     riga = _permesso(db, utente.id, biblioteca.id)
@@ -88,6 +97,8 @@ def puo_condividere(db: Session, utente: models.User, biblioteca: models.Library
 
 
 def puo_gestire_permessi(db: Session, utente: models.User, biblioteca: models.Library) -> bool:
+    if biblioteca.is_private:
+        return biblioteca.owner_id == utente.id
     if utente.is_founder or biblioteca.owner_id == utente.id:
         return True
     riga = _permesso(db, utente.id, biblioteca.id)
@@ -101,7 +112,7 @@ def puo_cancellare(db: Session, utente: models.User, biblioteca: models.Library)
     modifica piu' grande delle altre, e' un'altra cosa. Chi puo' modificare
     puo' sbagliare un titolo; chi puo' cancellare porta via i libri a tutti
     quelli con cui e' condivisa."""
-    return bool(utente.is_founder or biblioteca.owner_id == utente.id)
+    return bool(biblioteca.owner_id == utente.id or (utente.is_founder and not biblioteca.is_private))
 
 
 # ── Permessi dell'account, come dipendenze FastAPI ────────────────────────

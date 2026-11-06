@@ -238,6 +238,8 @@ def _ensure_schema_migrations() -> None:
         conn.commit()
 
         existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(libraries)")}
+        if "is_private" not in existing:
+            conn.exec_driver_sql("ALTER TABLE libraries ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 0")
         if "owner_id" not in existing:
             conn.exec_driver_sql("ALTER TABLE libraries ADD COLUMN owner_id INTEGER")
             log_message("info", "system", "Migrated libraries: added missing 'owner_id' column.")
@@ -416,6 +418,7 @@ def _ensure_schema_migrations() -> None:
             ("language", "ALTER TABLE ingested_books ADD COLUMN language VARCHAR"),
             ("isbn", "ALTER TABLE ingested_books ADD COLUMN isbn VARCHAR"),
             ("uploader_id", "ALTER TABLE ingested_books ADD COLUMN uploader_id INTEGER"),
+            ("is_private", "ALTER TABLE ingested_books ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 0"),
         )
         for col, ddl in ingested_book_columns:
             if col not in existing:

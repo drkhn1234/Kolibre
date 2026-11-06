@@ -818,6 +818,8 @@ class Library(Base):
     # deve poter esistere per un istante invece di bloccare l'avvio.
     # Cancellarla resta del solo proprietario: decisione del 28/09.
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Private libraries are accessible ONLY to their owners, regardless of role.
+    is_private = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -875,6 +877,8 @@ class IngestedBook(Base):
     # NULL identifies trusted watcher/legacy staging. No FK: deleting an
     # account must not turn its private staged items into trusted imports.
     uploader_id = Column(Integer, nullable=True, index=True)
+    # Privacy decision made before upload; enforced when importing.
+    is_private = Column(Boolean, default=False, nullable=False)
     file_path = Column(String, nullable=False)
     filename = Column(String, nullable=False)
     file_format = Column(String, nullable=False)

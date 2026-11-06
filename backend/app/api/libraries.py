@@ -49,8 +49,12 @@ def resolve_default_library_folder(db: Session, utente: models.User = None):
     """
     if utente is not None:
         visibili = permessi.biblioteche_visibili(db, utente)
-        return visibili[0].folder_name if visibili else None
-    row = db.query(models.Library).order_by(models.Library.sort_order, models.Library.id).first()
+        shared = next((lib for lib in visibili if not lib.is_private), None)
+        return shared.folder_name if shared else (visibili[0].folder_name if visibili else None)
+    # Default uploads always target the first shared library, never a personal one.
+    row = db.query(models.Library).filter(
+        models.Library.is_private.is_(False)
+    ).order_by(models.Library.sort_order, models.Library.id).first()
     return row.folder_name if row else None
 
 
@@ -268,6 +272,7 @@ def list_libraries(
             "path": row.path,
             "icon": "library" if i == 0 else "archive",
             "owner": nomi_utenti.get(row.owner_id),
+            "isPrivate": bool(row.is_private),
             "visibleUsers": sorted(filter(None, [nomi_utenti.get(row.owner_id)] + condivisa_con)),
             # Cosa puo' farci chi sta guardando: serve al frontend per
             # nascondere i comandi invece di offrirli e poi rispondere 403.
@@ -1042,6 +1047,8 @@ def set_library_permission(
     la scala che porta ovunque: basterebbe darsi can_manage da soli.
     """
     riga = _biblioteca(db, name)
+    if riga.is_private:
+        raise HTTPException(status_code=403, detail="Private libraries cannot be shared")
     if not permessi.puo_condividere(db, current_user, riga):
         raise HTTPException(status_code=403, detail="Non puoi condividere questa biblioteca.")
 
@@ -1124,6 +1131,8 @@ def set_library_owner(
     nuovo = db.query(models.User).filter(models.User.id == payload.get("user_id")).first()
     if not nuovo:
         raise HTTPException(status_code=404, detail="Utente non trovato")
+    if riga.is_private:
+        raise HTTPException(status_code=403, detail="Private libraries cannot transfer ownership")
     vecchio_id = riga.owner_id
     riga.owner_id = nuovo.id
     # Il vecchio proprietario non resta fuori dalla sua biblioteca: prende
