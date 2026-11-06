@@ -14,13 +14,14 @@ from ..logging_utils import log_message
 from ..services import duplicates, page_counter, app_settings, book_hash_service, opf_metadata, author_ingest_hook, author_stats_service, stats_service, ingest_import_job
 from ..services.library_scanner import EBOOK_EXTENSIONS
 from ..services.watcher import stage_ingest_file
+from ..services.ingest_access import visible_ingest_query, get_accessible_ingest, require_upload_library
 from ..calibre import calibre_naming
 from ..calibre.library import CalibreLibrary
 from ..calibre.connection import page_count_fields
 from ..calibre.functions import string_to_authors
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from .libraries import resolve_folder_name, resolve_default_library_folder
+from .libraries import resolve_folder_name, resolve_default_library_folder, default_library_param
 
 router = APIRouter(prefix="/api/kolibre/ingest", tags=["ingest"])
 
@@ -47,7 +48,7 @@ def _serialize_ingest_item(item: models.IngestedBook) -> dict:
         "author": item.author or "Autore Sconosciuto",
         "formats": [item.file_format],
         "size": item.file_size_bytes or 0,
-        "path": item.file_path,
+        "path": item.filename,  # No server filesystem paths in API responses
         "date_added": item.detected_at.strftime('%Y-%m-%d'),
         "cover_url": f"/api/kolibre/ingest/{item.id}/cover" if item.cover_path else None,
         "description": item.description or "",
@@ -104,6 +105,7 @@ def list_ingest_books(
     db: Session = Depends(database.get_db),
     limit: int = None,
     offset: int = 0,
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Senza `limit` restituisce tutto, come sempre. Con `limit` una pagina —
@@ -114,11 +116,9 @@ def list_ingest_books(
     metadati, e a qualche migliaio diventa una pagina che non si apre.
     """
     _scan_ingest_folder(db)
-    q = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .order_by(models.IngestedBook.id)
-    )
+    q = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).order_by(models.IngestedBook.id)
     if limit is None:
         return [_serialize_ingest_item(item) for item in q.all()]
     totale = q.count()
@@ -185,14 +185,15 @@ def stop_ingest_import_job():
 
 
 @router.get("/pagination")
-def get_ingest_pagination(db: Session = Depends(database.get_db)):
+def get_ingest_pagination(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
     """Se la pagina Ingest va impaginata, e con che pagina. Conta e basta."""
     _scan_ingest_folder(db)
-    totale = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .count()
-    )
+    totale = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).count()
     conf = app_settings.get_ingest_pagination(db)
     return {
         "total": totale,
@@ -205,8 +206,9 @@ def get_ingest_pagination(db: Session = Depends(database.get_db)):
 
 @router.get("/duplicati")
 def ingest_duplicati(
-    library: str = None,
+    library: str = Depends(default_library_param),
     db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Quali file in attesa somigliano a qualcosa che in biblioteca c'e' gia'.
@@ -229,12 +231,10 @@ def ingest_duplicati(
     l'ha uguale: sul secondo caso l'hash aiuta, sul primo no, ed e' il primo
     quello che si vuole vedere prima di importare.
     """
-    folder = resolve_folder_name(db, library) if library else resolve_default_library_folder(db)
-    in_attesa = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .all()
-    )
+    folder = resolve_folder_name(db, library)
+    in_attesa = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).all()
     if not in_attesa:
         return {"library": folder, "duplicati": {}}
 
@@ -300,22 +300,25 @@ def get_ingest_file(
     yet, so unlike that endpoint this one is looked up directly by the
     IngestedBook row's own id, straight off disk from its file_path.
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item or not os.path.exists(item.file_path):
+    item = get_accessible_ingest(db, current_user, id)
+    if not os.path.exists(item.file_path):
         raise HTTPException(status_code=404, detail="File non trovato in ingest")
     ext = os.path.splitext(item.file_path)[1].lower()
     media_type = _INGEST_MIME_TYPES.get(ext, "application/octet-stream")
     return FileResponse(item.file_path, filename=item.filename, media_type=media_type)
 
 
-@public_router.get("/{id}/cover", dependencies=[Depends(auth.utente_o_dispositivo)])
-def get_ingest_cover(id: int, db: Session = Depends(database.get_db)):
+@public_router.get("/{id}/cover")
+def get_ingest_cover(
+    id: int, db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.utente_o_dispositivo),
+):
     """
     Serves the cover image extracted at staging time (metadata_parser.py,
     only ever populated for EPUB — see that module for why PDF has none).
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item or not item.cover_path or not os.path.exists(item.cover_path):
+    item = get_accessible_ingest(db, current_user, id)
+    if not item.cover_path or not os.path.exists(item.cover_path):
         raise HTTPException(status_code=404, detail="Copertina non disponibile")
     ext = os.path.splitext(item.cover_path)[1].lower()
     media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}.get(
@@ -325,7 +328,10 @@ def get_ingest_cover(id: int, db: Session = Depends(database.get_db)):
 
 
 @router.delete("/{id}")
-def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
+def discard_ingest_item(
+    id: int, db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
     """
     "Scarta" reale per una riga di staging, singola: a differenza del vecchio
     comportamento solo-frontend (svuotava l'elenco in memoria, ma il file
@@ -336,9 +342,7 @@ def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
     staging, a differenza delle librerie vere (vedi settings.py's cestino
     librerie).
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Elemento di ingest non trovato")
+    item = get_accessible_ingest(db, current_user, id)
     if item.status != "pending":
         raise HTTPException(status_code=409, detail="Elemento di ingest già in importazione o non più disponibile")
 
@@ -446,12 +450,16 @@ async def upload_ingest_files(
         # Stage right away; stage_ingest_file dedupes on file_path, so if the
         # watcher's debounce already staged this exact path (benign race) this
         # is a no-op and we just pick up the existing row.
-        stage_ingest_file(db, dest_path)
+        stage_ingest_file(db, dest_path, uploader_id=current_user.id)
         item = (
             db.query(models.IngestedBook)
             .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
             .first()
         )
+        if item is not None and item.uploader_id is None:
+            # Handle a watcher winning the staging race before the HTTP upload.
+            item.uploader_id = current_user.id
+            db.commit()
         if item is None:
             # Shouldn't happen for a regular file we just wrote; clean up so the
             # ingest folder isn't left with an untracked file.
