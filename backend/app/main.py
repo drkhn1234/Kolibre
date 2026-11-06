@@ -723,7 +723,7 @@ async def lifespan(app: FastAPI):
         # esistevano prima che i permessi esistessero si conservano.
         #
         # Idempotente: gira a ogni avvio e non tocca niente che abbia gia'
-        # un proprietario o una riga di permesso.
+        # un proprietario. Una riga di permesso mancante puo' essere una revoca.
         if db.query(models.User).count() > 0:
             fondatore = db.query(models.User).filter(models.User.is_founder.is_(True)).first()
             if not fondatore:
@@ -743,34 +743,8 @@ async def lifespan(app: FastAPI):
                           "can_register_devices", "can_edit_authors"):
                 setattr(fondatore, campo, True)
 
-            senza_proprietario = db.query(models.Library).filter(models.Library.owner_id.is_(None)).all()
-            for biblioteca in senza_proprietario:
-                biblioteca.owner_id = fondatore.id
-            if senza_proprietario:
-                log_message(
-                    "info", "auth",
-                    f"{len(senza_proprietario)} biblioteche assegnate a '{fondatore.username}'.",
-                )
-
-            altri = db.query(models.User).filter(models.User.id != fondatore.id).all()
-            if altri:
-                biblioteche = db.query(models.Library).all()
-                esistenti = {
-                    (p.user_id, p.library_id)
-                    for p in db.query(models.LibraryPermission).all()
-                }
-                aggiunti = 0
-                for utente in altri:
-                    for biblioteca in biblioteche:
-                        if (utente.id, biblioteca.id) in esistenti or biblioteca.owner_id == utente.id:
-                            continue
-                        db.add(models.LibraryPermission(
-                            user_id=utente.id, library_id=biblioteca.id,
-                            can_edit=True, can_share=False, can_manage=False,
-                        ))
-                        aggiunti += 1
-                if aggiunti:
-                    log_message("info", "auth", f"{aggiunti} permessi di biblioteca conservati dalla situazione precedente.")
+            from .services.legacy_permissions import migrate_legacy_library_permissions
+            migrate_legacy_library_permissions(db, fondatore)
             db.commit()
 
         # Rete di sicurezza per il controllo `is_admin`, che da oggi chiude
