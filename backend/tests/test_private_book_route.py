@@ -19,9 +19,19 @@ from app.api.library_transfer import copy_book_to_library
 class FakeWriteQueue:
     def __init__(self):
         self.calls = []
+        self.skip_flags = []
+        self.fail_on = None
+        self.source_deleted = False
 
-    async def submit(self, operation, payload, path):
+    async def submit(self, operation, payload, path, _skip_persist_on_failure=False):
         self.calls.append((operation, payload, path))
+        self.skip_flags.append(_skip_persist_on_failure)
+        if self.fail_on == operation:
+            if operation == "delete_book" and path == "/fake/shared":
+                self.source_deleted = True
+            raise RuntimeError(f"Simulated failure: {operation}")
+        if operation == "delete_book" and path == "/fake/shared":
+            self.source_deleted = True
         if operation == "insert_book":
             return 303
         return None
@@ -35,7 +45,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             models.LibraryPermission.__table__,
             models.ReadingPosition.__table__, models.ReadingSession.__table__,
             models.Highlight.__table__, models.BookReadingCoverage.__table__,
-            models.BookHash.__table__, models.Device.__table__,
+            models.BookHash.__table__, models.PrivateBookMove.__table__,
+            models.Device.__table__,
             models.DeviceBook.__table__, models.SyncQueue.__table__,
             models.DeviceFlaggedBook.__table__, models.StatsCache.__table__,
         ])
@@ -88,6 +99,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             lib = cls.return_value
             lib.list_books.return_value = [self.sample]
             lib.get_format_file_path.return_value = "/fake/shared/author/title.epub"
+            lib.find_book_by_private_move_token.return_value = 303
+            lib.get_book.side_effect = lambda _id: None if self.queue.source_deleted else self.sample
             result = await copy_book_to_library(
                 "shared", book_id, payload, write_queue=self.queue,
                 db=self.db, current_user=principal or self.owner,
@@ -101,6 +114,11 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["made_private"])
         self.assertEqual(result["book_id"], 303)
         self.assertIn("delete_book", [entry[0] for entry in self.queue.calls])
+        self.assertTrue(all(self.queue.skip_flags))
+        move = self.db.query(models.PrivateBookMove).one()
+        self.assertEqual(move.state, "completed")
+        self.assertIsNone(move.active_key)
+        self.assertEqual(move.target_book_id, 303)
         self.assertEqual(
             self.db.query(models.ReadingPosition).filter_by(user_id=1).one().library,
             "private_owner",
@@ -118,6 +136,42 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             "sister's personal notes",
         )
         self.assertEqual(self.db.query(models.BookHash).count(), 0)
+
+    async def test_failed_copy_removes_target_but_never_shared_source(self):
+        self.queue.fail_on = "add_format"
+        with self.assertRaises(RuntimeError):
+            await self._invoke({"make_private": True})
+        move = self.db.query(models.PrivateBookMove).one()
+        self.assertEqual(move.state, "rolled_back")
+        self.assertIsNone(move.active_key)
+        self.assertEqual(
+            [(op, path) for op, _, path in self.queue.calls if op == "delete_book"],
+            [("delete_book", "/fake/private_owner")],
+        )
+        self.assertEqual(
+            self.db.query(models.ReadingPosition).filter_by(user_id=1).one().library,
+            "shared",
+        )
+        self.assertTrue(all(self.queue.skip_flags))
+
+    async def test_error_after_source_deletion_finishes_owner_data(self):
+        # Simulate a Calibre deletion that committed but whose worker raised
+        # before the caller received the response.
+        self.queue.fail_on = "delete_book"
+        with self.assertRaises(RuntimeError):
+            await self._invoke({"make_private": True})
+        move = self.db.query(models.PrivateBookMove).one()
+        self.assertEqual(move.state, "completed")
+        self.assertEqual(self.db.query(models.ReadingPosition).filter_by(user_id=1).one().library, "private_owner")
+        self.assertEqual(self.db.query(models.ReadingPosition).filter_by(user_id=2).one().library, "shared")
+
+    async def test_duplicate_active_private_move_returns_conflict(self):
+        from app.services.private_move_recovery import begin
+        begin(self.db, self.owner.id, "shared", 45, "private_owner")
+        with self.assertRaises(HTTPException) as ctx:
+            await self._invoke({"make_private": True})
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual([x[0] for x in self.queue.calls], [])
 
     async def test_generic_copy_and_delete_cannot_bypass_private_migration(self):
         with self.assertRaises(HTTPException) as ctx:
