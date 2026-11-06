@@ -676,3 +676,32 @@ async def copy_book_to_library(
                 move.failure_code = "reconciliation_failed"
                 db.commit()
         raise
+
+
+@router.get("/private-moves")
+def list_my_private_moves(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
+    """Owner-only move history; never exposes book titles or internal tokens."""
+    moves = db.query(models.PrivateBookMove).filter(
+        models.PrivateBookMove.owner_id == current_user.id,
+    ).order_by(models.PrivateBookMove.id.desc()).limit(50).all()
+    return [private_move_recovery.serialize_move(row) for row in moves]
+
+
+@router.post("/private-moves/{move_id}/recover")
+async def recover_my_private_move(
+    move_id: int,
+    db: Session = Depends(database.get_db),
+    write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
+    """Recover an interrupted move without admin access to private records."""
+    from datetime import timedelta
+    move = private_move_recovery.private_move_for_user(db, move_id, current_user.id)
+    if move.state in ("copying", "ready", "source_deleted"):
+        # Avoid a second HTTP request undoing a currently active move.
+        if move.updated_at and datetime.utcnow() - move.updated_at < timedelta(minutes=2):
+            raise HTTPException(status_code=409, detail="Move may still be running")
+    return await private_move_recovery.reconcile(db, move, write_queue)
