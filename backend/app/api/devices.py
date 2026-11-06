@@ -1279,8 +1279,7 @@ def browse_catalog(
         tag_needle = _fold_accents(tag)
         books = [b for b in books if any(tag_needle in _fold_accents(t) for t in (b.get("tags") or []))]
     if exclude_on_device:
-        require_device_library(db, current_device, library)
-    on_device = _device_book_ids_on_device(db, current_device.id, library)
+        on_device = _device_book_ids_on_device(db, current_device.id, library)
         books = [b for b in books if b["id"] not in on_device]
 
     if sort == "recent":
