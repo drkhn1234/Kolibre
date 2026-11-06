@@ -130,6 +130,15 @@ async def reconcile(db: Session, move, write_queue):
         checkpoint(db, move, "rolled_back")
         return serialize_move(move)
 
+    # A source disappearing while the copy was still in progress does NOT
+    # prove the new private copy was complete. Keep its journal locked and
+    # request manual review rather than silently accepting an incomplete book.
+    if move.state == "copying":
+        move.state = "needs_review"
+        move.failure_code = "source_missing_before_copy_ready"
+        db.commit()
+        return serialize_move(move)
+
     # Source was deleted, so the target is the only Calibre copy left.
     # This update is idempotent: only rows still keyed by the old shared
     # book identity can be moved, preventing duplicate records on retry.
