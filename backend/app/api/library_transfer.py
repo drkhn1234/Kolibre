@@ -104,6 +104,7 @@ def _apply_calibre_annotations(db: Session, user_id: int, folder: str, book_id: 
         existing = (
             db.query(models.Highlight)
             .filter(
+                models.Highlight.user_id == user_id,
                 models.Highlight.library == folder,
                 models.Highlight.calibre_book_id == book_id,
                 models.Highlight.annot_id == annot_id,
