@@ -199,7 +199,7 @@ def add_word_from_reader(
         entry.definition_fetched_at = datetime.utcnow()
     db.commit()
     db.refresh(entry)
-    return _serialize_web_entry(entry)
+    return _serialize_web_entry(entry, db, current_user)
 
 
 def _resolve_entry(db: Session, current_user: models.User, composite_id: str):
