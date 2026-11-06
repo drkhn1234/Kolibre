@@ -35,11 +35,11 @@ def _settings() -> tuple[str, str, str]:
     return issuer, audience, jwks_uri
 
 
-def verify_oidc_user(token: str, db: Session) -> models.User:
-    """Verify RS256 access token against trusted JWKS, then resolve linked user.
+def verify_oidc_claims(token: str) -> tuple[str, str]:
+    """Validate the issuer-signed token independently of Kolibre account state.
 
-    Unrecognized subjects are NEVER auto-provisioned. A verified token by
-    itself is insufficient to access a Kolibre account.
+    Used during owner-initiated account linking only after verifying the
+    owner's separate native Kolibre login and password.
     """
     issuer, audience, jwks_uri = _settings()
     try:
@@ -80,6 +80,12 @@ def verify_oidc_user(token: str, db: Session) -> models.User:
     except (JWTError, httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError) as exc:
         raise OIDCIdentityError("OIDC verification failed") from exc
 
+    return issuer, sub
+
+
+def verify_oidc_user(token: str, db: Session) -> models.User:
+    """Validate OIDC identity, then resolve a previously linked local account."""
+    issuer, sub = verify_oidc_claims(token)
     user = db.query(models.User).filter(
         models.User.oidc_issuer == issuer,
         models.User.oidc_subject == sub,
