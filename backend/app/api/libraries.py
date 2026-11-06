@@ -107,11 +107,14 @@ def default_library_param(
                 status_code=404,
                 detail=NESSUNA_BIBLIOTECA_TUA if (esistono and utente is not None) else NESSUNA_BIBLIOTECA_ESISTE,
             )
-    if utente is not None:
-        riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
-        if riga is not None and not permessi.puo_leggere(db, utente, riga):
-            raise HTTPException(status_code=403, detail=f"Non hai accesso alla biblioteca '{riga.name}'.")
-    return library
+    # Fail closed: an unregistered filesystem folder must NEVER be readable
+    # through a guessed library name while ownership has not been established.
+    if utente is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if riga is None or not permessi.puo_leggere(db, utente, riga):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return riga.folder_name
 
 
 def biblioteca_scrivibile(
@@ -124,11 +127,12 @@ def biblioteca_scrivibile(
     Si appoggia a `default_library_param`, quindi chi non puo' nemmeno
     leggere riceve il 403 di la' — e chi legge ma non modifica lo riceve
     qui, con il motivo giusto."""
-    if utente is not None:
-        riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
-        if riga is not None and not permessi.puo_modificare(db, utente, riga):
-            raise HTTPException(status_code=403, detail=f"Non puoi modificare la biblioteca '{riga.name}'.")
-    return library
+    if utente is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if riga is None or not permessi.puo_modificare(db, utente, riga):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return riga.folder_name
 
 
 def library_display_name(db: Session, folder_name: str) -> str:
