@@ -136,6 +136,7 @@ async def start_ingest_import_job(
     payload: dict,
     request: Request,
     db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Avvia l'importazione in blocco SUL SERVER. Il browser puo' andarsene.
@@ -159,29 +160,42 @@ async def start_ingest_import_job(
     ids = payload.get("ids")
     if ids is None:
         ids = [
-            r[0] for r in db.query(models.IngestedBook.id)
+            row[0] for row in visible_ingest_query(db, current_user)
             .filter(models.IngestedBook.status == "pending")
-            .order_by(models.IngestedBook.id).all()
+            .order_by(models.IngestedBook.id)
+            .with_entities(models.IngestedBook.id).all()
         ]
-    voci = [(int(i), per_item.get(str(i)) or generale) for i in ids]
+    if not isinstance(ids, list) or len(ids) > 10000:
+        raise HTTPException(status_code=400, detail="Invalid import ID list")
+    voci = []
+    for raw_id in ids:
+        try:
+            ingest_id = int(raw_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid staged book ID")
+        item = get_accessible_ingest(db, current_user, ingest_id)
+        if item.status != "pending":
+            raise HTTPException(status_code=409, detail="Staged item is not pending")
+        destination = require_upload_library(db, current_user, per_item.get(str(ingest_id)) or generale)
+        voci.append((ingest_id, destination))
     if not voci:
         raise HTTPException(status_code=400, detail="Nessun libro da importare")
-    if not ingest_import_job.start(voci, request.app.state.write_queue):
+    if not ingest_import_job.start(voci, request.app.state.write_queue, current_user.id):
         raise HTTPException(status_code=409, detail="Un'importazione in blocco è già in corso")
     log_message("info", "ingest", f"Importazione in blocco avviata: {len(voci)} libri")
     return {"status": "started", "total": len(voci)}
 
 
 @router.get("/import-job")
-def get_ingest_import_job():
+def get_ingest_import_job(current_user: models.User = Depends(auth.get_current_user_flexible)):
     """Stato dell'importazione in blocco. Interrogabile da qualunque pagina."""
-    return ingest_import_job.status()
+    return ingest_import_job.status(current_user.id)
 
 
 @router.post("/import-job/stop")
-def stop_ingest_import_job():
+def stop_ingest_import_job(current_user: models.User = Depends(auth.get_current_user_flexible)):
     """Ferma dopo il libro in corso. Quelli gia' importati restano importati."""
-    return {"stopping": ingest_import_job.stop()}
+    return {"stopping": ingest_import_job.stop(current_user.id)}
 
 
 @router.get("/pagination")
@@ -479,7 +493,13 @@ async def import_book_from_ingest(
     payload: schemas.IngestImportRequest,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
+    # Authorize ownership and destination BEFORE touching the staging row.
+    item = get_accessible_ingest(db, current_user, payload.id)
+    library_name = require_upload_library(db, current_user, payload.library)
+    if item.status != "pending":
+        raise HTTPException(status_code=409, detail="Staged item is not pending")
     # Atomically claim the ingest row before doing anything else: two concurrent
     # imports of the same id (e.g. a double-click, or a retried request) must not
     # both pass the "pending" check and race to move the same source file.
@@ -492,7 +512,7 @@ async def import_book_from_ingest(
     if not claimed:
         raise HTTPException(status_code=409, detail="Elemento di ingest già in importazione o non più disponibile")
 
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == payload.id).first()
+    item = get_accessible_ingest(db, current_user, payload.id)
     # Compensation state for the `except` below: an import that fails halfway
     # used to leave BOTH a half-built Calibre book (a row with no path and no
     # format — unreachable from every UI, undeletable from the library view)
@@ -505,9 +525,6 @@ async def import_book_from_ingest(
         if not os.path.exists(item.file_path):
             raise HTTPException(status_code=404, detail="File non trovato in ingest")
 
-        library_name = resolve_folder_name(db, payload.library) if payload.library else resolve_default_library_folder(db)
-        if not library_name:
-            raise HTTPException(status_code=404, detail="Nessuna libreria configurata. Creane una prima di continuare.")
         library_path = config.library_path(library_name)
         title = payload.title or item.title
         author = payload.author or item.author or "Autore Sconosciuto"
