@@ -18,7 +18,7 @@ from ..calibre.functions import string_to_authors
 from ..calibre.connection import page_count_fields
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, private_book_move, page_counter, opf_metadata, author_stats_service, stats_service
+from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, private_book_move, private_move_recovery, page_counter, opf_metadata, author_stats_service, stats_service
 from .libraries import sync_library_registry, _library_stats
 from ..services.ingest_access import ensure_private_library
 
@@ -550,92 +550,129 @@ async def copy_book_to_library(
         raise HTTPException(status_code=409, detail="Book has no formats to make private")
     title = book["title"]
     author = book["author"] or "Autore Sconosciuto"
-    new_book_id = await write_queue.submit("insert_book", {"title": title, "author": author}, target_path)
-    # Come sopra: cartella e nomi nella forma di Calibre. L'id e' quello
-    # NUOVO, della biblioteca di destinazione.
-    target_dir_rel = calibre_naming.percorso_per_libro(new_book_id, title, author)
-    target_dir_abs = os.path.join(target_path, target_dir_rel)
-    os.makedirs(target_dir_abs, exist_ok=True)
-    nome_file = calibre_naming.construct_file_name(
-        title, calibre_naming.autore_di_cartella(author),
-        calibre_naming.lunghezza_estensione(book["formats"]),
-    )
+    # An active-key uniqueness constraint prevents concurrent private moves
+    # of the same source book (including after an interrupted request).
+    move = private_move_recovery.begin(
+        db, current_user.id, folder, book_id, target_folder
+    ) if make_private else None
 
-    saved_formats = []
-    for fmt in book["formats"]:
-        src_file = source_lib.get_format_file_path(book_id, fmt)
-        if not src_file:
-            continue
-        base_name = nome_file
-        dest_file = os.path.join(target_dir_abs, f"{base_name}.{fmt.lower()}")
-        shutil.copyfile(src_file, dest_file)
-        await write_queue.submit(
-            "add_format",
-            {"book_id": new_book_id, "fmt": fmt, "size_bytes": os.path.getsize(dest_file), "name": base_name},
+    async def queue_write(operation, payload, library_path):
+        return await write_queue.submit(
+            operation, payload, library_path,
+            _skip_persist_on_failure=bool(move),
+        )
+
+    try:
+        new_book_id = await queue_write(
+            "insert_book",
+            {"title": title, "author": author, **({"private_move_token": move.token} if move else {})},
             target_path,
         )
-        book_hash_service.upsert_book_hash(db, target_folder, new_book_id, fmt, dest_file)
-        saved_formats.append(fmt)
-    db.commit()
-
-    if make_private and len(saved_formats) != len(book["formats"]):
-        # Keep the shared source intact; a partial private copy is not a move.
-        raise HTTPException(status_code=409, detail="Failed to copy every book format")
-
-    fields = {"path": target_dir_rel}
-    if book.get("series_index") is not None:
-        fields["series_index"] = book["series_index"]
-    for key, value in book.items():
-        if key.startswith("#"):
-            fields[key] = value
-    await write_queue.submit("update_book", {"book_id": new_book_id, "fields": fields}, target_path)
-
-    if book.get("identifiers"):
-        for id_type, value in book["identifiers"].items():
-            await write_queue.submit(
-                "set_identifier", {"book_id": new_book_id, "id_type": id_type, "value": value}, target_path
-            )
-    if book.get("publisher"):
-        await write_queue.submit("set_publisher", {"book_id": new_book_id, "name": book["publisher"]}, target_path)
-    if book.get("tags"):
-        await write_queue.submit("set_book_tags", {"book_id": new_book_id, "tags": book["tags"]}, target_path)
-    if book.get("series"):
-        await write_queue.submit(
-            "set_book_series", {"book_id": new_book_id, "series_name": book["series"]}, target_path
+        if move:
+            private_move_recovery.checkpoint(db, move, "copying", target_id=new_book_id)
+        # Come sopra: cartella e nomi nella forma di Calibre. L'id e' quello
+        # NUOVO, della biblioteca di destinazione.
+        target_dir_rel = calibre_naming.percorso_per_libro(new_book_id, title, author)
+        target_dir_abs = os.path.join(target_path, target_dir_rel)
+        os.makedirs(target_dir_abs, exist_ok=True)
+        nome_file = calibre_naming.construct_file_name(
+            title, calibre_naming.autore_di_cartella(author),
+            calibre_naming.lunghezza_estensione(book["formats"]),
         )
-    if book.get("description"):
-        await write_queue.submit("set_comments", {"book_id": new_book_id, "text": book["description"]}, target_path)
 
-    cover_src = book.get("cover_path")
-    if cover_src and os.path.exists(cover_src):
-        with open(cover_src, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("ascii")
-        await write_queue.submit("set_cover", {"book_id": new_book_id, "image_b64": image_b64}, target_path)
-
-    if delete_source:
-        if make_private:
-            # Repoint ONLY the mover's reading history and KOReader records.
-            # Other users retain their notes/progress and existing device
-            # copies under the old shared book identity.
-            private_book_move.migrate_owner_records(
-                db, folder, book_id, target_folder, new_book_id, current_user.id
+        saved_formats = []
+        for fmt in book["formats"]:
+            src_file = source_lib.get_format_file_path(book_id, fmt)
+            if not src_file:
+                continue
+            base_name = nome_file
+            dest_file = os.path.join(target_dir_abs, f"{base_name}.{fmt.lower()}")
+            shutil.copyfile(src_file, dest_file)
+            await queue_write(
+                "add_format",
+                {"book_id": new_book_id, "fmt": fmt, "size_bytes": os.path.getsize(dest_file), "name": base_name},
+                target_path,
             )
-            db.flush()
-            try:
-                await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
-            except Exception:
-                db.rollback()
-                raise
-        else:
-            await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
-            book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
+            book_hash_service.upsert_book_hash(db, target_folder, new_book_id, fmt, dest_file)
+            saved_formats.append(fmt)
         db.commit()
 
-    author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
-    log_message(
-        "info", "library-transfer",
-        f"Copiato libro '{title}' da '{folder}' a '{target_folder}'" + (" (eliminato dall'origine)" if delete_source else ""),
-    )
-    return {"status": "ok", "book_id": new_book_id, "formats": saved_formats,
-            "target_folder": target_folder, "made_private": make_private}
+        if make_private and len(saved_formats) != len(book["formats"]):
+            # Keep the shared source intact; a partial private copy is not a move.
+            raise HTTPException(status_code=409, detail="Failed to copy every book format")
+
+        fields = {"path": target_dir_rel}
+        if book.get("series_index") is not None:
+            fields["series_index"] = book["series_index"]
+        for key, value in book.items():
+            if key.startswith("#"):
+                fields[key] = value
+        await queue_write("update_book", {"book_id": new_book_id, "fields": fields}, target_path)
+
+        if book.get("identifiers"):
+            for id_type, value in book["identifiers"].items():
+                await queue_write(
+                    "set_identifier", {"book_id": new_book_id, "id_type": id_type, "value": value}, target_path
+                )
+        if book.get("publisher"):
+            await queue_write("set_publisher", {"book_id": new_book_id, "name": book["publisher"]}, target_path)
+        if book.get("tags"):
+            await queue_write("set_book_tags", {"book_id": new_book_id, "tags": book["tags"]}, target_path)
+        if book.get("series"):
+            await queue_write(
+                "set_book_series", {"book_id": new_book_id, "series_name": book["series"]}, target_path
+            )
+        if book.get("description"):
+            await queue_write("set_comments", {"book_id": new_book_id, "text": book["description"]}, target_path)
+
+        cover_src = book.get("cover_path")
+        if cover_src and os.path.exists(cover_src):
+            with open(cover_src, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("ascii")
+            await queue_write("set_cover", {"book_id": new_book_id, "image_b64": image_b64}, target_path)
+
+        if move:
+            private_move_recovery.checkpoint(db, move, "ready")
+
+        if delete_source:
+            if move:
+                # This is the irreversible cross-database boundary. The move
+                # journal and its target token are durable BEFORE deleting source.
+                await queue_write("delete_book", {"book_id": book_id}, source_path)
+                private_move_recovery.checkpoint(db, move, "source_deleted")
+                private_book_move.migrate_owner_records(
+                    db, folder, book_id, target_folder, new_book_id, current_user.id
+                )
+                private_move_recovery.checkpoint(db, move, "completed")
+            else:
+                await queue_write("delete_book", {"book_id": book_id}, source_path)
+                book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
+                db.commit()
+
+        author_stats_service.safe_mark_author_pages_dirty(db)
+        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+        if move:
+            # An administrator may read application logs. Never log private titles.
+            log_message("info", "library-transfer", f"Private move completed (operation {move.id})")
+        else:
+            log_message(
+                "info", "library-transfer",
+                f"Copiato libro '{title}' da '{folder}' a '{target_folder}'" + (" (eliminato dall'origine)" if delete_source else ""),
+            )
+        return {"status": "ok", "book_id": new_book_id, "formats": saved_formats,
+                "target_folder": target_folder, "made_private": make_private}
+
+    except Exception:
+        if move:
+            db.rollback()
+            # Determine the actual Calibre state instead of assuming the
+            # failing operation did or did not commit. Never schedule
+            # delayed destructive retries through pending_calibre_writes.
+            try:
+                await private_move_recovery.reconcile(db, move, write_queue)
+            except Exception:
+                db.rollback()
+                move.state = "needs_review"
+                move.failure_code = "reconciliation_failed"
+                db.commit()
+        raise
