@@ -137,12 +137,14 @@ def _build_book_meta(highlights: list, db: Session, current_user: models.User) -
     return book_meta
 
 
-def _build_device_names(device_ids, db: Session) -> dict:
+def _build_device_names(device_ids, db: Session, user_id: int) -> dict:
     """device_id -> name, one query for every device actually referenced (not per highlight)."""
     device_ids = {d for d in device_ids if d is not None}
     if not device_ids:
         return {}
-    rows = db.query(models.Device.id, models.Device.name).filter(models.Device.id.in_(device_ids)).all()
+    rows = db.query(models.Device.id, models.Device.name).filter(
+        models.Device.id.in_(device_ids), models.Device.user_id == user_id,
+    ).all()
     return {device_id: name for device_id, name in rows}
 
 
@@ -184,7 +186,7 @@ def list_annotations(
     # all when a page opens: that only overloads the page).
     book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
-        [h.device_id for h in hls] + [o.device_id for o in orphans], db
+        [h.device_id for h in hls] + [o.device_id for o in orphans], db, current_user.id
     )
     return (
         [_serialize(h, book_meta, device_names) for h in hls]
@@ -222,7 +224,7 @@ def export_annotations(
     )
     book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
-        [h.device_id for h in hls] + [o.device_id for o in orphans], db
+        [h.device_id for h in hls] + [o.device_id for o in orphans], db, current_user.id
     )
 
     results = []
@@ -319,7 +321,7 @@ def update_orphan_annotation(
     if "color" in payload:
         o.color = payload["color"]
     db.commit()
-    return _serialize_orphan(o, _build_device_names([o.device_id], db))
+    return _serialize_orphan(o, _build_device_names([o.device_id], db, current_user.id))
 
 
 @router.delete("/orphans/{id}")
@@ -347,7 +349,7 @@ def restore_orphan_annotation(
     o = _get_owned_orphan(db, id, current_user)
     o.deleted_at = None
     db.commit()
-    return _serialize_orphan(o, _build_device_names([o.device_id], db))
+    return _serialize_orphan(o, _build_device_names([o.device_id], db, current_user.id))
 
 
 @router.post("/retry-failed-positions")
@@ -466,7 +468,7 @@ def update_annotation(
         h.cfi_end = payload.get("cfi_end") or payload["cfi_start"]
         h.position_status = "ritrovata_dal_testo"
     db.commit()
-    return _serialize(h, device_names=_build_device_names([h.device_id], db))
+    return _serialize(h, device_names=_build_device_names([h.device_id], db, current_user.id))
 
 
 @router.delete("/{id}")
@@ -502,4 +504,4 @@ def restore_annotation(
         raise HTTPException(status_code=404, detail="Annotazione non trovata")
     h.deleted_at = None
     db.commit()
-    return _serialize(h, device_names=_build_device_names([h.device_id], db))
+    return _serialize(h, device_names=_build_device_names([h.device_id], db, current_user.id))
