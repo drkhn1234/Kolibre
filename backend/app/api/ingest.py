@@ -365,7 +365,10 @@ def discard_ingest_item(
         try:
             os.remove(item.file_path)
         except OSError as e:
-            log_message("warning", "ingest", f"Rimozione file staging fallita per '{item.file_path}': {e}")
+            if item.is_private:
+                log_message("warning", "ingest", "Private staged file removal failed")
+            else:
+                log_message("warning", "ingest", f"Rimozione file staging fallita per '{item.file_path}': {e}")
     if item.cover_path and os.path.exists(item.cover_path):
         try:
             os.remove(item.cover_path)
@@ -375,7 +378,10 @@ def discard_ingest_item(
     title = item.title
     db.delete(item)
     db.commit()
-    log_message("info", "ingest", f"Scartato dallo staging: '{title}' (file eliminato)")
+    if item.is_private:
+        log_message("info", "ingest", "Private staging item discarded")
+    else:
+        log_message("info", "ingest", f"Scartato dallo staging: '{title}' (file eliminato)")
     return {"status": "ok"}
 
 
@@ -488,7 +494,10 @@ async def upload_ingest_files(
             rejected.append({"filename": original_name, "reason": "Staging del file fallito"})
             continue
 
-        log_message("info", "ingest", f"Upload web: file '{os.path.basename(dest_path)}' salvato in ingest")
+        if visibility == "private":
+            log_message("info", "ingest", "Private web upload staged")
+        else:
+            log_message("info", "ingest", f"Upload web: file '{os.path.basename(dest_path)}' salvato in ingest")
         staged.append(_serialize_ingest_item(item))
 
     return {"staged": staged, "rejected": rejected}
@@ -597,7 +606,10 @@ async def import_book_from_ingest(
                     image_b64 = base64.b64encode(f.read()).decode("ascii")
                 await write_queue.submit("set_cover", {"book_id": book_id, "image_b64": image_b64}, library_path)
             except Exception as e:
-                log_message("warning", "ingest", f"Impostazione copertina fallita per '{title}': {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book cover processing failed")
+                else:
+                    log_message("warning", "ingest", f"Impostazione copertina fallita per '{title}': {e}")
             # La riga di staging resta (status passa a "confirmed" poco sotto,
             # per audit/duplicate-check — non viene eliminata come su
             # discard), ma il file cover cache non serve più: il libro ha
@@ -623,7 +635,10 @@ async def import_book_from_ingest(
             try:
                 opf_metadata.embed_page_count(library_path, dest_file, item.file_format, pages)
             except Exception as e:
-                log_message("warning", "ingest", f"Embedding pagine nell'OPF fallito per '{dest_file}': {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book OPF embedding failed")
+                else:
+                    log_message("warning", "ingest", f"Embedding pagine nell'OPF fallito per '{dest_file}': {e}")
 
         book_hash_service.upsert_book_hash(db, library_name, book_id, item.file_format, dest_file)
 
@@ -646,17 +661,23 @@ async def import_book_from_ingest(
             try:
                 shutil.rmtree(os.path.dirname(dest_file))
             except OSError as e:
-                log_message("warning", "ingest", f"Rollback: cartella libro non rimossa ({dest_file}): {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book rollback directory cleanup failed")
+                else:
+                    log_message("warning", "ingest", f"Rollback: cartella libro non rimossa ({dest_file}): {e}")
         if book_id is not None:
             try:
                 await write_queue.submit("delete_book", {"book_id": book_id}, library_path)
             except Exception as e:
-                log_message("warning", "ingest", f"Rollback: libro Calibre {book_id} non rimosso: {e}")
+                log_message("warning", "ingest", f"Rollback: book {book_id} could not be removed")
         item.status = "pending"
         db.commit()
         raise
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
-    log_message("info", "ingest", f"Imported book '{title}' into library '{library_name}'")
+    if item.is_private:
+        log_message("info", "ingest", "Private book imported")
+    else:
+        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+        log_message("info", "ingest", f"Imported book '{title}' into library '{library_name}'")
     return {"status": "ok", "book_id": book_id, "library": library_name}

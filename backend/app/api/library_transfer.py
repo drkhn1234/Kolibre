@@ -479,7 +479,10 @@ async def _completa_caricamento(
         _apply_calibre_annotations(db, current_user.id, folder, book_id, meta["calibre_annotations"])
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+    # Private book metadata must not be sent to the global author scraper.
+    destination_row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if destination_row is not None and not destination_row.is_private:
+        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
     return {"status": "ok", "book_id": book_id, "formats": saved_formats}
 
 
@@ -611,6 +614,10 @@ async def copy_book_to_library(
 
         if book.get("identifiers"):
             for id_type, value in book["identifiers"].items():
+                # A recovery token belongs to one particular copy operation,
+                # never to copies of that book in other libraries.
+                if id_type == "kolibre-private-move":
+                    continue
                 await queue_write(
                     "set_identifier", {"book_id": new_book_id, "id_type": id_type, "value": value}, target_path
                 )
@@ -650,7 +657,8 @@ async def copy_book_to_library(
                 db.commit()
 
         author_stats_service.safe_mark_author_pages_dirty(db)
-        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+        if not move and not target_row.is_private:
+            author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
         if move:
             # An administrator may read application logs. Never log private titles.
             log_message("info", "library-transfer", f"Private move completed (operation {move.id})")
