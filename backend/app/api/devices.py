@@ -230,6 +230,10 @@ def scan_unmatched_books(
         if stale:
             db.commit()
 
+    owner = db.query(models.User).filter(models.User.id == current_device.user_id).first()
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Device owner not found")
+    accessible = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)}
     matched, unmatched = [], []
     for item in items:
         file_hash = item.get("hash")
@@ -241,6 +245,8 @@ def scan_unmatched_books(
             continue
         candidates = []
         for hit in hits:
+            if hit.library not in accessible:
+                continue
             lib = CalibreLibrary(config.library_path(hit.library))
             book = lib.get_book(hit.calibre_book_id)
             candidates.append({
@@ -384,7 +390,11 @@ def _build_sends(db: Session, device: models.Device) -> list:
         models.DeviceBook.status.in_(_SENDABLE_STATUSES),
     ).all()
     sends, libraries_cache = [], {}
+    owner = db.query(models.User).filter(models.User.id == device.user_id).first()
+    allowed = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)} if owner else set()
     for row in rows:
+        if row.library not in allowed:
+            continue
         lib = libraries_cache.setdefault(row.library, CalibreLibrary(config.library_path(row.library)))
         book_row = lib.get_book(row.calibre_book_id)
         author = lib.get_book_author(row.calibre_book_id)
@@ -423,7 +433,11 @@ def _build_removes(db: Session, device: models.Device) -> list:
         models.DeviceBook.status == "pending_delete",
     ).all()
     removes, libraries_cache = [], {}
+    owner = db.query(models.User).filter(models.User.id == device.user_id).first()
+    allowed = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)} if owner else set()
     for row in rows:
+        if row.library not in allowed:
+            continue
         lib = libraries_cache.setdefault(row.library, CalibreLibrary(config.library_path(row.library)))
         book_row = lib.get_book(row.calibre_book_id)
         removes.append({
