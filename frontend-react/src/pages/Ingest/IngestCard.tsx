@@ -78,7 +78,11 @@ export function IngestCard({
 
         <div className="mt-1 flex items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground">{t('ingest.card.destinationLabel')}</span>
-          <LibraryPickerButton libraries={libraries} value={destLibrary} onChange={onChangeDestLibrary} size="sm" />
+          {item.isPrivate ? (
+            <span className="rounded border border-border px-1.5 py-0.5 text-xs">Private library (only you)</span>
+          ) : (
+            <LibraryPickerButton libraries={libraries.filter((lib) => lib.canUpload !== false)} value={destLibrary} onChange={onChangeDestLibrary} size="sm" />
+          )}
         </div>
       </div>
 

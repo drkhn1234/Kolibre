@@ -17,13 +17,14 @@ export interface IngestUploadResponse {
 // uploadAuthorPhoto in authorActions.ts (bodySerializer forza il body reale
 // a FormData; openapi-fetch vuole comunque un body "JSON-shaped" a livello
 // di tipi, da cui il cast qui sotto).
-export async function uploadIngestFiles(files: File[]): Promise<IngestUploadResponse> {
+export async function uploadIngestFiles(files: File[], visibility: 'shared' | 'private' = 'shared'): Promise<IngestUploadResponse> {
   const { data, error } = await api.POST('/api/kolibre/ingest/upload', {
     // @ts-expect-error vedi commento sopra — il vero body arriva da bodySerializer
     body: { files },
     bodySerializer() {
       const form = new FormData()
       files.forEach((file) => form.append('files', file))
+      form.append('visibility', visibility)
       return form
     },
   })
@@ -52,12 +53,12 @@ export interface ImportIngestPayload {
 // disponibile (es. doppio click, o già importato da un'altra richiesta) —
 // il chiamante lo intercetta per aggregare "N falliti" invece di un errore
 // generico.
-export async function importIngestBook(payload: ImportIngestPayload): Promise<{ book_id: number }> {
+export async function importIngestBook(payload: ImportIngestPayload): Promise<{ book_id: number; library: string }> {
   const { data, error } = await api.POST('/api/kolibre/ingest/import-book', {
     body: payload,
   })
   if (error) throw error
-  return data as unknown as { book_id: number }
+  return data as unknown as { book_id: number; library: string }
 }
 
 // "Scarta" reale (DELETE /{id}/ingest — vedi ingest.py::discard_ingest_item):
