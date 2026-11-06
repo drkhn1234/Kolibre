@@ -18,8 +18,9 @@ from ..calibre.functions import string_to_authors
 from ..calibre.connection import page_count_fields
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, page_counter, opf_metadata, author_stats_service, stats_service
+from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, private_book_move, page_counter, opf_metadata, author_stats_service, stats_service
 from .libraries import sync_library_registry, _library_stats
+from ..services.ingest_access import ensure_private_library
 
 router = APIRouter(prefix="/api/kolibre/library-transfer", tags=["library-transfer"])
 
@@ -513,20 +514,40 @@ async def copy_book_to_library(
     ride along that way (it's Kolibre's own app.db table, not a Calibre
     column) — computed explicitly below, same as every other book-add path.
     """
-    source_path = _require_library(folder, db, current_user, access="edit" if payload.get("delete_source") else "read")
-    target_folder = (payload.get("target_folder") or "").strip()
+    make_private = payload.get("make_private") is True
+    delete_source = make_private or bool(payload.get("delete_source"))
+    source_path = _require_library(
+        folder, db, current_user, access="edit" if delete_source else "read"
+    )
+    source_row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if make_private:
+        if source_row is None or source_row.is_private:
+            raise HTTPException(status_code=409, detail="Only shared books can be made private")
+        # Verify the original exists before creating a new personal Calibre DB.
+        source_books = CalibreLibrary(source_path).list_books()
+        if not any(book["id"] == book_id for book in source_books):
+            raise HTTPException(status_code=404, detail="Book not found")
+        target_folder = ensure_private_library(db, current_user).folder_name
+    else:
+        target_folder = (payload.get("target_folder") or "").strip()
     if not target_folder:
         raise HTTPException(status_code=400, detail="target_folder è obbligatorio")
     if target_folder == folder:
         raise HTTPException(status_code=400, detail="La libreria di destinazione deve essere diversa dall'origine")
     target_path = _require_library(target_folder, db, current_user, access="upload")
-    delete_source = bool(payload.get("delete_source"))
+    target_row = db.query(models.Library).filter(models.Library.folder_name == target_folder).first()
+    if delete_source and target_row.is_private and not make_private:
+        # The old general-purpose move migrated EVERY user's personal state.
+        # Private moves MUST use the special owner-only migration below.
+        raise HTTPException(status_code=409, detail="Use make_private for private moves")
 
     source_lib = CalibreLibrary(source_path)
     book = next((b for b in source_lib.list_books() if b["id"] == book_id), None)
     if not book:
         raise HTTPException(status_code=404, detail="Libro non trovato nella libreria di origine")
 
+    if make_private and not book["formats"]:
+        raise HTTPException(status_code=409, detail="Book has no formats to make private")
     title = book["title"]
     author = book["author"] or "Autore Sconosciuto"
     new_book_id = await write_queue.submit("insert_book", {"title": title, "author": author}, target_path)
@@ -556,6 +577,10 @@ async def copy_book_to_library(
         book_hash_service.upsert_book_hash(db, target_folder, new_book_id, fmt, dest_file)
         saved_formats.append(fmt)
     db.commit()
+
+    if make_private and len(saved_formats) != len(book["formats"]):
+        # Keep the shared source intact; a partial private copy is not a move.
+        raise HTTPException(status_code=409, detail="Failed to copy every book format")
 
     fields = {"path": target_dir_rel}
     if book.get("series_index") is not None:
@@ -588,13 +613,22 @@ async def copy_book_to_library(
         await write_queue.submit("set_cover", {"book_id": new_book_id, "image_b64": image_b64}, target_path)
 
     if delete_source:
-        await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
-        # "Copia ed elimina l'originale" is a MOVE, so the reading history
-        # moves with the book instead of being orphaned on an id that no
-        # longer resolves — which is what used to happen: progress, sessions
-        # and highlights stayed pinned to the source library forever, and no
-        # device was ever told to drop its copy. See book_records.
-        book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
+        if make_private:
+            # Repoint ONLY the mover's reading history and KOReader records.
+            # Other users retain their notes/progress and existing device
+            # copies under the old shared book identity.
+            private_book_move.migrate_owner_records(
+                db, folder, book_id, target_folder, new_book_id, current_user.id
+            )
+            db.flush()
+            try:
+                await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
+            except Exception:
+                db.rollback()
+                raise
+        else:
+            await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
+            book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
         db.commit()
 
     author_stats_service.safe_mark_author_pages_dirty(db)
@@ -603,4 +637,5 @@ async def copy_book_to_library(
         "info", "library-transfer",
         f"Copiato libro '{title}' da '{folder}' a '{target_folder}'" + (" (eliminato dall'origine)" if delete_source else ""),
     )
-    return {"status": "ok", "book_id": new_book_id, "formats": saved_formats}
+    return {"status": "ok", "book_id": new_book_id, "formats": saved_formats,
+            "target_folder": target_folder, "made_private": make_private}
