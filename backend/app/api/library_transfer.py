@@ -18,7 +18,7 @@ from ..calibre.functions import string_to_authors
 from ..calibre.connection import page_count_fields
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from ..services import app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, page_counter, opf_metadata, author_stats_service, stats_service
+from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, page_counter, opf_metadata, author_stats_service, stats_service
 from .libraries import sync_library_registry, _library_stats
 
 router = APIRouter(prefix="/api/kolibre/library-transfer", tags=["library-transfer"])
@@ -36,10 +36,22 @@ router = APIRouter(prefix="/api/kolibre/library-transfer", tags=["library-transf
 # rather than duplicated.
 
 
-def _require_library(folder: str) -> str:
-    library_path = config.library_path(folder)
+def _require_library(folder: str, db: Session, user: models.User, access: str = "read") -> str:
+    """No Calibre Desktop transfer operation can bypass library ownership."""
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    granted = (
+        row is not None and (
+            permessi.puo_leggere(db, user, row) if access == "read"
+            else permessi.puo_caricare(db, user, row) if access == "upload"
+            else permessi.puo_modificare(db, user, row) if access == "edit"
+            else False
+        )
+    )
+    if not granted:
+        raise HTTPException(status_code=404, detail="Library not found")
+    library_path = config.library_path(row.folder_name)
     if not os.path.exists(os.path.join(library_path, "metadata.db")):
-        raise HTTPException(status_code=404, detail=f"Libreria '{folder}' non trovata sul server")
+        raise HTTPException(status_code=404, detail="Library not found")
     return library_path
 
 
@@ -135,7 +147,7 @@ def list_transferable_libraries(
     /api/kolibre/devices/libraries (the KOReader-plugin equivalent).
     """
     sync_library_registry(db)
-    rows = db.query(models.Library).order_by(models.Library.id).all()
+    rows = permessi.biblioteche_visibili(db, current_user)
     result = []
     for row in rows:
         stats = _library_stats(row.folder_name)
@@ -163,7 +175,7 @@ def get_library_manifest(
     /api/kolibre/books/{id}/download and /cover endpoints — this endpoint is
     just the plan, not the payload.
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user)
     lib = CalibreLibrary(library_path)
     row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
     display_name = row.name if row else folder
@@ -222,7 +234,7 @@ def download_library_fulltext_db(
     folder: str,
     current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user)
     fulltext_path = os.path.join(library_path, fulltext_index.FULLTEXT_DB_FILENAME)
     if not os.path.exists(fulltext_path):
         raise HTTPException(status_code=404, detail="Nessun indice full-text per questa libreria")
@@ -243,7 +255,7 @@ async def upload_library_fulltext_db(
     it's actually a SQLite db with the expected fts_meta table, so a
     malformed/foreign file can't silently replace a library's working index.
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user, access="edit")
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Corpo della richiesta vuoto")
@@ -303,7 +315,7 @@ async def upload_library_book(
     to begin with, so it wasn't the reported bug, but it's the identical fix
     if/when that flow needs it too).
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user, access="upload")
 
     try:
         meta = json.loads(metadata)
@@ -499,13 +511,13 @@ async def copy_book_to_library(
     ride along that way (it's Kolibre's own app.db table, not a Calibre
     column) — computed explicitly below, same as every other book-add path.
     """
-    source_path = _require_library(folder)
+    source_path = _require_library(folder, db, current_user, access="edit" if payload.get("delete_source") else "read")
     target_folder = (payload.get("target_folder") or "").strip()
     if not target_folder:
         raise HTTPException(status_code=400, detail="target_folder è obbligatorio")
     if target_folder == folder:
         raise HTTPException(status_code=400, detail="La libreria di destinazione deve essere diversa dall'origine")
-    target_path = _require_library(target_folder)
+    target_path = _require_library(target_folder, db, current_user, access="upload")
     delete_source = bool(payload.get("delete_source"))
 
     source_lib = CalibreLibrary(source_path)
