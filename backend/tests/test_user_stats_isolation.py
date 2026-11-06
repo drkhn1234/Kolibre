@@ -68,6 +68,23 @@ class PerUserStatisticsDecisionsTests(unittest.TestCase):
             stats_service.pair_orphan_sessions(self.db, 1, "same-hash", "private_sister", 45)
         self.assertEqual(self.db.query(models.OrphanReadingSession).count(), 2)
 
+    def test_raw_admin_logs_not_available_with_multiple_users(self):
+        from app.api.tools import get_server_logs
+        from fastapi import HTTPException
+        admin = self.db.query(models.User).filter_by(id=1).one()
+        with self.assertRaises(HTTPException) as ctx:
+            get_server_logs(_chi=admin, db=self.db)
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_entity_helper_cannot_open_other_users_private_library(self):
+        from app.api.entities import _biblioteche
+        from fastapi import HTTPException
+        admin = self.db.query(models.User).filter_by(id=1).one()
+        with patch("app.api.entities.CalibreLibrary", side_effect=AssertionError("Private Calibre DB opened")):
+            with self.assertRaises(HTTPException) as ctx:
+                _biblioteche("private_sister", self.db, admin)
+        self.assertEqual(ctx.exception.status_code, 404)
+
     def test_legacy_global_pairing_not_used_to_open_private_library(self):
         self.db.add(models.StatsHashPairing(
             md5="same-hash", library="private_sister", calibre_book_id=45,
