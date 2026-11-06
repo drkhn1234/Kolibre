@@ -20,7 +20,7 @@ from . import metadata_parser
 DEBOUNCE_SECONDS = 2.0
 
 
-def stage_ingest_file(db, file_path: str) -> bool:
+def stage_ingest_file(db, file_path: str, uploader_id: int | None = None) -> bool:
     """
     Parses a file sitting in the ingest folder and inserts an IngestedBook
     staging row for it, unless one already exists for this exact path.
@@ -44,6 +44,7 @@ def stage_ingest_file(db, file_path: str) -> bool:
         meta = metadata_parser.parse_pdf_metadata(file_path)
 
     item = models.IngestedBook(
+        uploader_id=uploader_id,
         file_path=file_path,
         filename=filename,
         file_format=ext.upper().replace('.', ''),
