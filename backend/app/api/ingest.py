@@ -433,7 +433,11 @@ async def upload_ingest_files(
             })
             continue
 
-        out_handle, dest_path = _open_ingest_destination(original_name)
+        # Files beginning with a dot are ignored by the filesystem watcher.
+        # Keep an upload private during transfer, then publish the final path
+        # only once the staging record can be attributed to its uploader.
+        out_handle, hidden_path = _open_ingest_destination("." + original_name)
+        dest_path = None
         size = 0
         too_big = False
         try:
@@ -447,33 +451,38 @@ async def upload_ingest_files(
         except Exception:
             # Partial write (client disconnect, disk error): don't leave a
             # truncated file behind for the watcher to stage.
-            if os.path.exists(dest_path):
-                os.remove(dest_path)
+            if os.path.exists(hidden_path):
+                os.remove(hidden_path)
             raise
         finally:
             await upload.close()
 
         if too_big:
-            os.remove(dest_path)
+            os.remove(hidden_path)
             rejected.append({
                 "filename": original_name,
                 "reason": f"File troppo grande: il limite è {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB per file",
             })
             continue
 
-        # Stage right away; stage_ingest_file dedupes on file_path, so if the
-        # watcher's debounce already staged this exact path (benign race) this
-        # is a no-op and we just pick up the existing row.
-        stage_ingest_file(db, dest_path, uploader_id=current_user.id)
-        item = (
-            db.query(models.IngestedBook)
-            .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
-            .first()
-        )
-        if item is not None and item.uploader_id is None:
-            # Handle a watcher winning the staging race before the HTTP upload.
-            item.uploader_id = current_user.id
-            db.commit()
+        # Mark ownership in the database before publishing a file to the
+        # watched directory. stage_ingest_file ignores dot-prefixed files.
+        # A unique visible basename prevents collisions with other uploads.
+        try:
+            visible_handle, dest_path = _open_ingest_destination(original_name)
+            visible_handle.close()
+            os.replace(hidden_path, dest_path)
+            stage_ingest_file(db, dest_path, uploader_id=current_user.id)
+            item = (
+                db.query(models.IngestedBook)
+                .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
+                .first()
+            )
+        except Exception:
+            for path in (hidden_path, dest_path):
+                if path and os.path.exists(path):
+                    os.remove(path)
+            raise
         if item is None:
             # Shouldn't happen for a regular file we just wrote; clean up so the
             # ingest folder isn't left with an untracked file.
