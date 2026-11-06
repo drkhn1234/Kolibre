@@ -211,6 +211,23 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(self.queue.skip_flags[-1])
 
+    async def test_missing_source_before_ready_requires_manual_review(self):
+        from app.services.private_move_recovery import begin, checkpoint, reconcile
+        move = begin(self.db, self.owner.id, "shared", 45, "private_owner")
+        checkpoint(self.db, move, "copying", target_id=303)
+        with (
+            patch("app.services.private_move_recovery.config.library_path",
+                  side_effect=lambda folder: "/fake/" + folder),
+            patch("app.services.private_move_recovery.CalibreLibrary") as cls,
+        ):
+            cls.return_value.get_book.return_value = None
+            cls.return_value.find_book_by_private_move_token.return_value = 303
+            result = await reconcile(self.db, move, self.queue)
+        self.assertEqual(result["state"], "needs_review")
+        self.assertEqual(result["failure_code"], "source_missing_before_copy_ready")
+        self.assertFalse(self.queue.calls)
+        self.assertEqual(self.db.query(models.ReadingPosition).filter_by(user_id=1).one().library, "shared")
+
     async def test_generic_copy_and_delete_cannot_bypass_private_migration(self):
         with self.assertRaises(HTTPException) as ctx:
             await self._invoke({"target_folder": "private_owner", "delete_source": True})
