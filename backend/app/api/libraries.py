@@ -213,6 +213,17 @@ def resolve_folder_name(db: Session, name: str) -> str:
     return row.folder_name if row else name.lower().replace(" ", "_")
 
 
+def require_library_access(db: Session, user: models.User, name: str, edit: bool = False) -> str:
+    folder = resolve_folder_name(db, name)
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if row is None or not (
+        permessi.puo_modificare(db, user, row) if edit
+        else permessi.puo_leggere(db, user, row)
+    ):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return row.folder_name
+
+
 def _clear_deletion_tombstone(db: Session, folder_name: str) -> None:
     """Un-deletes a folder_name: the user is intentionally (re)creating a
     library at this slug, so it should no longer be excluded from
@@ -590,6 +601,7 @@ async def rescan_library(
     name: str,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Indexes book folders that already exist on disk (Author/Title/file.ext)
@@ -611,7 +623,7 @@ async def rescan_library(
     reached the server only via rescan showed up on a KOReader device with
     no page count at all).
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -685,6 +697,7 @@ async def recompute_page_counts(
     name: str,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     (Re)computes the "Pagine (stimate)" value for every book in a library,
@@ -693,7 +706,7 @@ async def recompute_page_counts(
     books that existed before this feature (imported/rescanned libraries),
     since normal ingest already computes it at import time.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -753,7 +766,7 @@ async def recompute_page_counts(
 
 
 @router.post("/{name}/recompute-hashes")
-def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
+def recompute_hashes(name: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Computes/refreshes the KOReader-compatible partial-MD5 for every format of
     every book in a library — needed so a device's sync handshake can resolve
@@ -761,7 +774,7 @@ def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
     this at import time; this catches books that existed before (imported or
     rescanned libraries).
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -783,7 +796,7 @@ def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
 
 
 @router.get("/{name}/book-paths")
-def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(database.get_db)):
+def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Quali libri stanno in una cartella intestata a un autore che non e' piu'
     il loro. Sola lettura: serve a far vedere cosa si sta per spostare prima
@@ -793,7 +806,7 @@ def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(databas
     biblioteca grande non ha senso spedire diecimila righe a una pagina che
     ne mostra una manciata, ma il totale deve restare quello vero.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -816,6 +829,7 @@ async def repair_book_paths(
     payload: dict | None = None,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Sposta i libri sotto la cartella dell'autore giusto.
@@ -828,7 +842,7 @@ async def repair_book_paths(
     idempotente e riprendibile, quindi la pagina puo' avanzare a blocchi e
     mostrare a che punto e' senza bloccare tutto in un'unica richiesta lunga.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -930,7 +944,7 @@ def delete_library(
     row = db.query(models.Library).filter(models.Library.folder_name == folder_name).first()
     if not (os.path.exists(lib_path) or os.path.lexists(lib_path)) and not row:
         raise HTTPException(status_code=404, detail="Library not found")
-    if row is not None and not permessi.puo_cancellare(db, current_user, row):
+    if row is None or not permessi.puo_cancellare(db, current_user, row):
         raise HTTPException(status_code=403, detail=f"Solo il proprietario può cancellare '{row.name}'.")
 
     if os.path.islink(lib_path):
@@ -1075,7 +1089,7 @@ def set_library_permission(
     puo_gestire = permessi.puo_gestire_permessi(db, current_user, riga)
     voluto = {
         "can_edit": bool(payload.get("can_edit")),
-        "can_upload": bool(payload.get("can_upload")),
+        "can_upload": bool(payload.get("can_upload", esistente.can_upload if esistente else False)),
         "can_share": bool(payload.get("can_share")),
         "can_manage": bool(payload.get("can_manage")),
     }
