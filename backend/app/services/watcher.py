@@ -20,7 +20,7 @@ from . import metadata_parser
 DEBOUNCE_SECONDS = 2.0
 
 
-def stage_ingest_file(db, file_path: str, uploader_id: int | None = None) -> bool:
+def stage_ingest_file(db, file_path: str, uploader_id: int | None = None, is_private: bool = False) -> bool:
     """
     Parses a file sitting in the ingest folder and inserts an IngestedBook
     staging row for it, unless one already exists for this exact path.
@@ -45,6 +45,7 @@ def stage_ingest_file(db, file_path: str, uploader_id: int | None = None) -> boo
 
     item = models.IngestedBook(
         uploader_id=uploader_id,
+        is_private=is_private,
         file_path=file_path,
         filename=filename,
         file_format=ext.upper().replace('.', ''),

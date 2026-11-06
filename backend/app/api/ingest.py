@@ -5,7 +5,7 @@ import threading
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,7 @@ from ..logging_utils import log_message
 from ..services import duplicates, page_counter, app_settings, book_hash_service, opf_metadata, author_ingest_hook, author_stats_service, stats_service, ingest_import_job
 from ..services.library_scanner import EBOOK_EXTENSIONS
 from ..services.watcher import stage_ingest_file
-from ..services.ingest_access import visible_ingest_query, get_accessible_ingest, require_upload_library
+from ..services.ingest_access import visible_ingest_query, get_accessible_ingest, require_ingest_destination
 from ..calibre import calibre_naming
 from ..calibre.library import CalibreLibrary
 from ..calibre.connection import page_count_fields
@@ -45,6 +45,7 @@ def _serialize_ingest_item(item: models.IngestedBook) -> dict:
     return {
         "id": item.id,
         "title": item.title,
+        "isPrivate": bool(item.is_private),
         "author": item.author or "Autore Sconosciuto",
         "formats": [item.file_format],
         "size": item.file_size_bytes or 0,
@@ -176,7 +177,7 @@ async def start_ingest_import_job(
         item = get_accessible_ingest(db, current_user, ingest_id)
         if item.status != "pending":
             raise HTTPException(status_code=409, detail="Staged item is not pending")
-        destination = require_upload_library(db, current_user, per_item.get(str(ingest_id)) or generale)
+        destination = require_ingest_destination(db, current_user, item, per_item.get(str(ingest_id)) or generale)
         voci.append((ingest_id, destination))
     if not voci:
         raise HTTPException(status_code=400, detail="Nessun libro da importare")
@@ -400,6 +401,7 @@ def _open_ingest_destination(filename: str, destination_dir: str | None = None):
 @router.post("/upload")
 async def upload_ingest_files(
     files: List[UploadFile] = File(...),
+    visibility: str = Form("shared"),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
@@ -413,6 +415,8 @@ async def upload_ingest_files(
     (services/library_scanner.EBOOK_EXTENSIONS); the watcher itself stages any
     non-hidden file, so this is the stricter, user-facing gate.
     """
+    if visibility not in ("shared", "private"):
+        raise HTTPException(status_code=400, detail="Invalid visibility (shared/private)")
     # Store web uploads outside the watched root; the watcher is non-recursive.
     # Ownership is attached synchronously by the HTTP request, without races.
     upload_dir = os.path.join(config.INGEST_DIR, "_web_uploads", str(current_user.id))
@@ -466,7 +470,7 @@ async def upload_ingest_files(
 
         # No filesystem watcher can race to assign a NULL owner.
         try:
-            stage_ingest_file(db, dest_path, uploader_id=current_user.id)
+            stage_ingest_file(db, dest_path, uploader_id=current_user.id, is_private=(visibility == "private"))
             item = (
                 db.query(models.IngestedBook)
                 .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
@@ -499,7 +503,7 @@ async def import_book_from_ingest(
 ):
     # Authorize ownership and destination BEFORE touching the staging row.
     item = get_accessible_ingest(db, current_user, payload.id)
-    library_name = require_upload_library(db, current_user, payload.library)
+    library_name = require_ingest_destination(db, current_user, item, payload.library)
     if item.status != "pending":
         raise HTTPException(status_code=409, detail="Staged item is not pending")
     # Atomically claim the ingest row before doing anything else: two concurrent
@@ -655,4 +659,4 @@ async def import_book_from_ingest(
     author_stats_service.safe_mark_author_pages_dirty(db)
     author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
     log_message("info", "ingest", f"Imported book '{title}' into library '{library_name}'")
-    return {"status": "ok", "book_id": book_id}
+    return {"status": "ok", "book_id": book_id, "library": library_name}
