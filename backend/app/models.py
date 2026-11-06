@@ -975,6 +975,30 @@ class AuthorMetadata(Base):
     wikidata_fetched_at = Column(DateTime, nullable=True)
 
 
+class PrivateBookMove(Base):
+    """Durable, owner-private recovery record for a cross-Calibre book move.
+
+    An active_key is unique while a move is pending and NULL on completion
+    or rollback (SQLite supports multiple NULLs in a UNIQUE index). Only the
+    initiating account may inspect/recover this row via the application.
+    """
+    __tablename__ = "private_book_moves"
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, nullable=False, index=True)
+    source_library = Column(String, nullable=False)
+    source_book_id = Column(Integer, nullable=False)
+    target_library = Column(String, nullable=False)
+    target_book_id = Column(Integer, nullable=True)
+    # A random token is written into the Calibre target row IN THE SAME
+    # SQLite transaction as insertion, closing the crash-before-ID gap.
+    token = Column(String, unique=True, nullable=False)
+    active_key = Column(String, unique=True, nullable=True, index=True)
+    state = Column(String, nullable=False, default="copying")
+    failure_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class PendingCalibreWrite(Base):
     """Fallback queue for metadata.db writes that failed after exhausting in-process retries."""
     __tablename__ = "pending_calibre_writes"
