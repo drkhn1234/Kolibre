@@ -95,8 +95,12 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             patch("app.api.library_transfer.ensure_private_library",
                   return_value=self.db.query(models.Library).filter_by(folder_name="private_owner").one()) as ensure_private,
             patch("app.api.library_transfer.CalibreLibrary") as cls,
+            patch("app.services.private_move_recovery.CalibreLibrary") as recovery_cls,
+            patch("app.services.private_move_recovery.config.library_path",
+                  side_effect=lambda folder: "/fake/" + folder),
         ):
             lib = cls.return_value
+            recovery_cls.return_value = lib
             lib.list_books.return_value = [self.sample]
             lib.get_format_file_path.return_value = "/fake/shared/author/title.epub"
             lib.find_book_by_private_move_token.return_value = 303
