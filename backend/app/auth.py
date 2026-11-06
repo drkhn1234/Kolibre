@@ -156,6 +156,19 @@ def _decode_token(token: str, db: Session):
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
     return _decode_token(token, db)
 
+
+def get_current_native_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
+    """Require local password-based Kolibre login for changing OIDC links.
+
+    OIDC tokens must never be allowed to relink or unlink their own identity.
+    """
+    try:
+        if jwt.get_unverified_header(token).get("alg") != ALGORITHM:
+            raise HTTPException(status_code=401, detail="Native Kolibre login required")
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="Native Kolibre login required") from exc
+    return _decode_token(token, db)
+
 def get_current_user_flexible(token_header: Optional[str] = Depends(oauth2_scheme_optional), token: Optional[str] = Query(None), db: Session = Depends(database.get_db)):
     """Accepts token from Authorization header OR ?token= query param (for browser downloads)."""
     resolved = token_header or token
