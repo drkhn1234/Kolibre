@@ -177,6 +177,40 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual([x[0] for x in self.queue.calls], [])
 
+    async def test_only_move_owner_can_read_or_recover_journal(self):
+        from app.api.library_transfer import list_my_private_moves, recover_my_private_move
+        from app.services.private_move_recovery import begin
+        move = begin(self.db, self.sister.id, "shared", 45, "sister_private")
+        self.assertEqual(list_my_private_moves(self.db, self.owner), [])
+        own = list_my_private_moves(self.db, self.sister)
+        self.assertEqual([row["id"] for row in own], [move.id])
+        self.assertNotIn("token", own[0])
+        with self.assertRaises(HTTPException) as ctx:
+            await recover_my_private_move(
+                move.id, db=self.db, write_queue=self.queue, current_user=self.owner,
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    async def test_reconcile_finds_uncheckpointed_calibre_target_by_token(self):
+        from app.services.private_move_recovery import begin, reconcile
+        move = begin(self.db, self.owner.id, "shared", 45, "private_owner")
+        self.assertIsNone(move.target_book_id)
+        with (
+            patch("app.services.private_move_recovery.config.library_path",
+                  side_effect=lambda folder: "/fake/" + folder),
+            patch("app.services.private_move_recovery.CalibreLibrary") as cls,
+        ):
+            cls.return_value.get_book.return_value = self.sample
+            cls.return_value.find_book_by_private_move_token.return_value = 303
+            result = await reconcile(self.db, move, self.queue)
+        self.assertEqual(result["state"], "rolled_back")
+        self.assertEqual(result["target_book_id"], 303)
+        self.assertEqual(
+            [(op, path) for op, _, path in self.queue.calls if op == "delete_book"],
+            [("delete_book", "/fake/private_owner")],
+        )
+        self.assertTrue(self.queue.skip_flags[-1])
+
     async def test_generic_copy_and_delete_cannot_bypass_private_migration(self):
         with self.assertRaises(HTTPException) as ctx:
             await self._invoke({"target_folder": "private_owner", "delete_source": True})
