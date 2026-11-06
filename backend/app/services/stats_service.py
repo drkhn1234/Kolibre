@@ -11,7 +11,7 @@ from ..calibre.library import CalibreLibrary
 from ..calibre.functions import string_to_authors
 from ..calibre.connection import PAGE_COUNT_COLUMN_LABEL, READ_FLAG_COLUMN_LABEL
 from ..logging_utils import log_message
-from . import book_hash_service
+from . import book_hash_service, permessi
 from . import app_settings
 
 # Same threshold the sibling KoServer project's own processor.py uses to
@@ -81,7 +81,7 @@ def record_live_tick(
     db.commit()
 
 
-def _resolve_book_identities(db: Session, md5: str) -> list:
+def _resolve_book_identities(db: Session, md5: str, user_id: int) -> list:
     """
     KOReader's statistics.sqlite3 `book.md5` column IS the same
     KOReader-compatible partial-MD5 this app already computes/stores in
@@ -96,15 +96,21 @@ def _resolve_book_identities(db: Session, md5: str) -> list:
     # riscritto il file dopo che il dispositivo lo aveva hashato: entrambi in
     # book_hash_service.resolve_book_identities, condiviso con le posizioni
     # di lettura in devices.py (che senza quel ripiego le buttavano via).
-    identities = book_hash_service.resolve_book_identities(db, md5)
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    accessible = {row.folder_name for row in permessi.biblioteche_visibili(db, user)} if user else set()
+    identities = [identity for identity in book_hash_service.resolve_book_identities(db, md5)
+                  if identity[0] in accessible]
     if identities:
         return identities
     # Last resort: a human manually confirmed this md5 (see
     # StatsHashPairing's own docstring) — covers the books that were
     # already orphaned before BookHashHistory existed, where there is
     # genuinely nothing left to recover automatically.
-    pairing = db.query(models.StatsHashPairing).filter(models.StatsHashPairing.md5 == md5).first()
-    if pairing:
+    pairing = db.query(models.UserStatsHashPairing).filter(
+        models.UserStatsHashPairing.user_id == user_id,
+        models.UserStatsHashPairing.md5 == md5,
+    ).first()
+    if pairing and pairing.library in accessible:
         return [(pairing.library, pairing.calibre_book_id)]
     return []
 
@@ -182,14 +188,15 @@ def process_statistics_db(db_path: str, user_id: int, device_id, db: Session) ->
         # library rarely changes between syncs, no need to re-query BookHash
         # for every single page-turn event.
         identities_by_local_id = {
-            local_id: _resolve_book_identities(db, md5)
+            local_id: _resolve_book_identities(db, md5, user_id)
             for local_id, md5 in local_id_to_md5.items()
         }
         # Same "resolve once, not per row" reasoning — see StatsHashDiscard's
         # own docstring for what this set gates below.
         discarded_md5s = {
-            r[0] for r in db.query(models.StatsHashDiscard.md5).filter(
-                models.StatsHashDiscard.md5.in_(set(local_id_to_md5.values()))
+            r[0] for r in db.query(models.UserStatsHashDiscard.md5).filter(
+                models.UserStatsHashDiscard.user_id == user_id,
+                models.UserStatsHashDiscard.md5.in_(set(local_id_to_md5.values())),
             ).all()
         }
 
@@ -431,34 +438,31 @@ def process_statistics_db(db_path: str, user_id: int, device_id, db: Session) ->
 
 
 def pair_orphan_sessions(db: Session, user_id, md5: str, library: str, calibre_book_id: int) -> dict:
-    """
-    The "Accoppia manualmente" action for orphan reading sessions — see
-    StatsHashPairing's own docstring for why this exists (the definitive
-    fix for history orphaned before BookHashHistory did, which has nothing
-    left to recover automatically). Mirrors devices.py's
-    _migrate_orphan_highlights: get-or-create the pairing row (idempotent —
-    re-pairing the same md5 just repoints it), copy every OrphanReadingSession
-    with this md5 into a real ReadingSession (deduped the same way
-    process_statistics_db already dedupes, by library+calibre_book_id+
-    device_id+start_time, in case a reprocess in the meantime already
-    resolved some of them another way), then delete the now-migrated
-    orphan rows. Global by md5, not scoped to one device or one user's
-    orphan rows only — see StatsHashPairing's own docstring for why.
-    """
-    pairing = db.query(models.StatsHashPairing).filter(models.StatsHashPairing.md5 == md5).first()
+    """Pair ONLY this user's orphan reading sessions with an authorized book."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if user is None or row is None or not permessi.puo_leggere(db, user, row):
+        raise PermissionError("Cannot pair reading data to an inaccessible library")
+    pairing = db.query(models.UserStatsHashPairing).filter(
+        models.UserStatsHashPairing.user_id == user_id,
+        models.UserStatsHashPairing.md5 == md5,
+    ).first()
     if pairing:
         pairing.library = library
         pairing.calibre_book_id = calibre_book_id
-        pairing.paired_by_user_id = user_id
     else:
-        db.add(models.StatsHashPairing(
-            md5=md5, library=library, calibre_book_id=calibre_book_id, paired_by_user_id=user_id,
+        db.add(models.UserStatsHashPairing(
+            user_id=user_id, md5=md5, library=library,
+            calibre_book_id=calibre_book_id,
         ))
-
-    orphans = db.query(models.OrphanReadingSession).filter(models.OrphanReadingSession.md5 == md5).all()
+    orphans = db.query(models.OrphanReadingSession).filter(
+        models.OrphanReadingSession.user_id == user_id,
+        models.OrphanReadingSession.md5 == md5,
+    ).all()
     migrated = 0
     for orphan in orphans:
         existing = db.query(models.ReadingSession).filter(
+            models.ReadingSession.user_id == user_id,
             models.ReadingSession.library == library,
             models.ReadingSession.calibre_book_id == calibre_book_id,
             models.ReadingSession.device_id == orphan.device_id,
@@ -466,33 +470,29 @@ def pair_orphan_sessions(db: Session, user_id, md5: str, library: str, calibre_b
         ).first()
         if not existing:
             db.add(models.ReadingSession(
-                user_id=orphan.user_id, library=library, calibre_book_id=calibre_book_id,
-                device_id=orphan.device_id, source="koreader", start_time=orphan.start_time,
-                duration=orphan.duration, pages_read=orphan.pages_read,
+                user_id=user_id, library=library, calibre_book_id=calibre_book_id,
+                device_id=orphan.device_id, source="koreader",
+                start_time=orphan.start_time, duration=orphan.duration,
+                pages_read=orphan.pages_read,
             ))
             migrated += 1
         db.delete(orphan)
-
     db.commit()
     return {"sessions_migrated": migrated, "sessions_already_resolved": len(orphans) - migrated}
 
 
 def discard_orphan_sessions(db: Session, user_id, md5: str) -> int:
-    """
-    The "Scarta" action for orphan reading sessions — the complement of
-    pair_orphan_sessions above, for the case a probable book (per its
-    self-reported title/author) is genuinely not worth tracking for
-    statistics at all, rather than mismatched to the wrong Calibre book.
-    Get-or-create the StatsHashDiscard row (idempotent, same shape as the
-    pairing side), then delete every existing OrphanReadingSession for this
-    md5 outright — there is nothing to migrate anywhere, unlike pairing.
-    Global by md5, same scope as StatsHashPairing/pair_orphan_sessions.
-    """
-    existing = db.query(models.StatsHashDiscard).filter(models.StatsHashDiscard.md5 == md5).first()
+    """Discard just this reader's hash; never delete another person's notes."""
+    existing = db.query(models.UserStatsHashDiscard).filter(
+        models.UserStatsHashDiscard.user_id == user_id,
+        models.UserStatsHashDiscard.md5 == md5,
+    ).first()
     if not existing:
-        db.add(models.StatsHashDiscard(md5=md5, discarded_by_user_id=user_id))
-
-    removed = db.query(models.OrphanReadingSession).filter(models.OrphanReadingSession.md5 == md5).delete()
+        db.add(models.UserStatsHashDiscard(user_id=user_id, md5=md5))
+    removed = db.query(models.OrphanReadingSession).filter(
+        models.OrphanReadingSession.user_id == user_id,
+        models.OrphanReadingSession.md5 == md5,
+    ).delete(synchronize_session=False)
     db.commit()
     return removed
 

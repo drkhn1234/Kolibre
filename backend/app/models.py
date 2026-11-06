@@ -557,6 +557,28 @@ class StatsHashDiscard(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UserStatsHashPairing(Base):
+    """A book-hash match belongs to one reader, never to every account."""
+    __tablename__ = "user_stats_hash_pairings"
+    __table_args__ = (UniqueConstraint("user_id", "md5"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    md5 = Column(String, nullable=False, index=True)
+    library = Column(String, nullable=False)
+    calibre_book_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserStatsHashDiscard(Base):
+    """Discard a hash only from this user's statistics/orphan queue."""
+    __tablename__ = "user_stats_hash_discards"
+    __table_args__ = (UniqueConstraint("user_id", "md5"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    md5 = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ReadingSession(Base):
     """One grouped reading session (KoServer-style 15-minute-gap grouping of
     KOReader's raw page_stat_data rows — see stats_service.process_statistics_db).
