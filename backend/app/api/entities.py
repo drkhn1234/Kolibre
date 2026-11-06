@@ -55,9 +55,16 @@ def _biblioteche(
     di lettura facendo un giro diverso.
     """
     if library != OVUNQUE:
-        # Una sola, e se non si apre l'errore e' pertinente: e' quella che hai
-        # chiesto.
-        return [(library, CalibreLibrary(config.library_path(library)))]
+        # Keep the common ACL at the data-access boundary, not only at HTTP
+        # callers. A future internal caller cannot open a private Calibre
+        # directory by bypassing default_library_param.
+        row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+        if row is None or not (
+            permessi.puo_modificare(db, utente, row) if scrivibili
+            else permessi.puo_leggere(db, utente, row)
+        ):
+            raise HTTPException(status_code=404, detail="Library not found")
+        return [(row.folder_name, CalibreLibrary(config.library_path(row.folder_name)))]
 
     righe = permessi.biblioteche_visibili(db, utente)
     if scrivibili:
