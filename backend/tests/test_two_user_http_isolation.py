@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import auth, config, database, models
-from app.api import libraries, books, fulltext, annotations, vocabulary
+from app.api import libraries, books, fulltext, annotations, vocabulary, opds
 from app.calibre.library import CalibreLibrary
 
 
@@ -41,11 +41,11 @@ class TwoUserHttpPrivacyTests(unittest.TestCase):
         models.Base.metadata.create_all(self.engine)
         self.session = Session(self.engine)
         self.founder = models.User(
-            id=1, username="founder", hashed_password="test",
+            id=1, username="founder", hashed_password=auth.get_password_hash("test-password"),
             is_founder=True, is_admin=True,
         )
         self.sister = models.User(
-            id=2, username="sister", hashed_password="test",
+            id=2, username="sister", hashed_password=auth.get_password_hash("test-password"),
             is_founder=False, is_admin=False,
         )
         self.session.add_all([self.founder, self.sister])
@@ -71,7 +71,7 @@ class TwoUserHttpPrivacyTests(unittest.TestCase):
 
         app = FastAPI()
         for router in (libraries.router, books.router, fulltext.router,
-                       annotations.router, vocabulary.router):
+                       annotations.router, vocabulary.router, opds.router):
             app.include_router(router)
 
         def active_user(request: Request):
@@ -136,6 +136,28 @@ class TwoUserHttpPrivacyTests(unittest.TestCase):
         sister = self.get("/api/kolibre/annotations")
         self.assertEqual(sister.status_code, 200, sister.text)
         self.assertIn("Sister-only annotation", str(sister.json()))
+
+    def test_http_basic_opds_denies_founder_others_private_books(self):
+        with patch("app.api.opds.app_settings.is_opds_feed_enabled", return_value=True):
+            founder_root = self.client.get(
+                "/opds", auth=("founder", "test-password"),
+            )
+            self.assertEqual(founder_root.status_code, 200, founder_root.text)
+            self.assertNotIn("sister_private", founder_root.text)
+            other = self.client.get(
+                "/opds/sister_private/all", auth=("founder", "test-password"),
+            )
+            self.assertEqual(other.status_code, 404, other.text)
+            owner_root = self.client.get(
+                "/opds", auth=("sister", "test-password"),
+            )
+            self.assertEqual(owner_root.status_code, 200, owner_root.text)
+            self.assertIn("sister_private", owner_root.text)
+            own = self.client.get(
+                "/opds/sister_private/all", auth=("sister", "test-password"),
+            )
+            self.assertEqual(own.status_code, 200, own.text)
+            self.assertIn("Private sister reading", own.text)
 
     def test_founder_cannot_write_annotation_into_sisters_private_library(self):
         response = self.client.post(
