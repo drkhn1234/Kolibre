@@ -14,6 +14,11 @@ on:
       - "backend/app/models.py"
       - "backend/app/main.py"
       - "backend/tests/**"
+      - "backend/app/api/library_transfer.py"
+      - "backend/app/api/opds.py"
+      - "backend/app/api/libraries.py"
+      - "backend/app/api/devices.py"
+      - "frontend-react/**"
       - ".github/workflows/multiuser-ingest.yml"
 
 jobs:
@@ -35,3 +40,20 @@ jobs:
         run: python -m compileall -q app tests
       - name: Run ingest isolation tests
         run: python -m unittest discover -s tests -p 'test_ingest_access.py' -v
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-react
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-react/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Type-check and build React UI
+        run: npm run build
