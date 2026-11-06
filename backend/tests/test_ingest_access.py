@@ -22,6 +22,8 @@ class IngestIsolationTests(unittest.TestCase):
             models.Library.__table__,
             models.LibraryPermission.__table__,
             models.IngestedBook.__table__,
+            models.ReadingSession.__table__,
+            models.Highlight.__table__,
         ])
         self.db = Session(self.engine)
         self.founder = SimpleNamespace(id=1, is_founder=True)
@@ -133,6 +135,44 @@ class IngestIsolationTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as exc:
             require_ingest_destination(self.db, self.third, staged, None)
         self.assertEqual(exc.exception.status_code, 403)
+
+    def test_author_reading_statistics_are_not_shared(self):
+        from datetime import datetime
+        from unittest.mock import patch
+        from app.api.authors import get_author_reading_stats
+
+        self.db.add_all([
+            models.ReadingSession(
+                user_id=self.sister.id, library="shared", calibre_book_id=77,
+                start_time=datetime(2026, 11, 1), duration=120,
+            ),
+            models.ReadingSession(
+                user_id=self.founder.id, library="shared", calibre_book_id=77,
+                start_time=datetime(2026, 11, 1), duration=2400,
+            ),
+            models.Highlight(
+                user_id=self.sister.id, library="shared", calibre_book_id=77,
+                text="Sister highlight",
+            ),
+            models.Highlight(
+                user_id=self.founder.id, library="shared", calibre_book_id=77,
+                text="Founder highlight",
+            ),
+        ])
+        self.db.commit()
+        with (
+            patch("app.api.authors.get_author_books", return_value=[
+                {"id": 77, "library": "shared"}
+            ]),
+            patch("app.api.authors.stats_service._chars_map", return_value={}),
+            patch("app.api.authors.stats_service._book_meta_map", return_value={}),
+        ):
+            stats = get_author_reading_stats(
+                "Author", db=self.db, current_user=self.sister
+            )
+        self.assertEqual(stats["total_time_seconds"], 120)
+        self.assertEqual(stats["sessions"], 1)
+        self.assertEqual(stats["highlights"], 1)
 
     def test_opds_library_cannot_be_queried_by_founder(self):
         from app.api.opds import _get_library_row, _list_library_rows
