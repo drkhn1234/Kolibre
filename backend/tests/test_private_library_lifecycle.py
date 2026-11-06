@@ -121,6 +121,19 @@ class PrivateLibraryLifecycleTests(unittest.TestCase):
             libraries.default_library_param(self.folder, self.db, self.owner), self.folder
         )
 
+    def test_crash_orphan_private_library_cannot_be_auto_registered_shared(self):
+        # Creation writes metadata.db before the registration commit. A crash
+        # between these operations must not expose the private files on boot.
+        folder = "private_999_unregistered"
+        orphan = self.lib_root / folder
+        orphan.mkdir()
+        (orphan / "metadata.db").write_bytes(b"private")
+        libraries.sync_library_registry(self.db)
+        self.assertIsNone(
+            self.db.query(models.Library).filter_by(folder_name=folder).first()
+        )
+        self.assertEqual(self.db.query(models.Library).count(), 1)
+
     def test_legacy_private_trash_is_fail_closed(self):
         entry = "private_55_legacy_111111"
         (self.trash_root / entry).mkdir()
