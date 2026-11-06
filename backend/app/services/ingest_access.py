@@ -5,6 +5,9 @@ by the founder. Uploaded items belong exclusively to their authenticated user.
 """
 from fastapi import HTTPException
 from sqlalchemy import or_
+from uuid import uuid4
+from .. import config
+from ..calibre.library import CalibreLibrary
 from .. import models
 from . import permessi
 
@@ -40,3 +43,37 @@ def require_upload_library(db, user, library_name):
     if library is None or not permessi.puo_caricare(db, user, library):
         raise HTTPException(status_code=403, detail="No upload permission for this library")
     return library.folder_name
+
+
+def ensure_private_library(db, user):
+    """Create the user's first personal Calibre library on demand.
+
+    Private libraries cannot be shared, even by the founder. Generated slugs
+    prevent collisions with a user's existing public library names.
+    """
+    private = db.query(models.Library).filter(
+        models.Library.owner_id == user.id,
+        models.Library.is_private.is_(True),
+    ).order_by(models.Library.id).first()
+    if private:
+        return private
+
+    from ..api.libraries import _next_sort_order
+    folder = f"private_{user.id}_{uuid4().hex[:12]}"
+    name = f"Private ({user.username}) - {folder[-6:]}"
+    path = config.library_path(folder)
+    CalibreLibrary(path, crea=True)
+    private = models.Library(
+        name=name, folder_name=folder, path=path,
+        owner_id=user.id, is_private=True, sort_order=_next_sort_order(db),
+    )
+    db.add(private)
+    db.commit()
+    return private
+
+
+def require_ingest_destination(db, user, staged, requested_library):
+    """Resolve the destination; a private upload cannot fall back to shared."""
+    if staged.is_private:
+        return ensure_private_library(db, user).folder_name
+    return require_upload_library(db, user, requested_library)
