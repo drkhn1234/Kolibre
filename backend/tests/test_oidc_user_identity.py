@@ -128,6 +128,65 @@ class OIDCUserIdentityTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 auth._decode_token(self.signed(), self.db)
 
+    def test_account_linking_requires_password_and_the_same_authenticated_owner(self):
+        from app.api import users
+        sister = self.db.query(models.User).filter_by(id=2).one()
+        sister.hashed_password = auth.get_password_hash("sister-password")
+        sister.oidc_issuer = None
+        sister.oidc_subject = None
+        self.db.commit()
+        invalid = users.OIDCLinkRequest(
+            password="wrong-password", oidc_access_token=self.signed()
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            users.link_my_oidc_account(invalid, db=self.db, current_user=sister)
+        self.assertEqual(ctx.exception.status_code, 401)
+        self.assertIsNone(sister.oidc_subject)
+
+        valid = users.OIDCLinkRequest(
+            password="sister-password", oidc_access_token=self.signed()
+        )
+        result = users.link_my_oidc_account(valid, db=self.db, current_user=sister)
+        self.assertTrue(result["linked"])
+        self.assertEqual(sister.oidc_subject, "external-sister")
+
+        # Founder cannot take over sister's OIDC identity via the app.
+        founder = self.db.query(models.User).filter_by(id=1).one()
+        founder.hashed_password = auth.get_password_hash("founder-password")
+        founder.oidc_issuer = None
+        founder.oidc_subject = None
+        self.db.commit()
+        take_over = users.OIDCLinkRequest(
+            password="founder-password", oidc_access_token=self.signed()
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            users.link_my_oidc_account(take_over, db=self.db, current_user=founder)
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_native_login_only_for_credential_linking_and_password_unlink(self):
+        from app.api import users
+        sister = self.db.query(models.User).filter_by(id=2).one()
+        sister.hashed_password = auth.get_password_hash("sister-password")
+        self.db.commit()
+        with self.assertRaises(HTTPException) as ctx:
+            auth.get_current_native_user(token=self.signed(), db=self.db)
+        self.assertEqual(ctx.exception.status_code, 401)
+        native_token = auth.create_access_token(
+            {"sub": "sister"}, expires_delta=timedelta(minutes=5),
+        )
+        self.assertEqual(auth.get_current_native_user(token=native_token, db=self.db).id, 2)
+        with self.assertRaises(HTTPException):
+            users.unlink_my_oidc_account(
+                users.NativePasswordRequest(password="wrong"),
+                db=self.db, current_user=sister,
+            )
+        response = users.unlink_my_oidc_account(
+            users.NativePasswordRequest(password="sister-password"),
+            db=self.db, current_user=sister,
+        )
+        self.assertFalse(response["linked"])
+        self.assertIsNone(sister.oidc_subject)
+
     def test_legacy_kolibre_login_still_works(self):
         token = auth.create_access_token(
             {"sub": "sister"}, expires_delta=timedelta(minutes=5),
