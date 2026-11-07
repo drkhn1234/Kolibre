@@ -24,7 +24,8 @@ for f in release.rglob("*"):
 route = Path("/etc/caddy/kolibre-stage.routes")
 before = route.read_text()
 marker = "# Kolibre web UI (managed)"
-assert marker not in before, "Web route exists; use an explicit upgrade"
+if marker in before:
+    assert "root * /srv/kolibre-web/current" in before, "Unexpected managed web route"
 addition = """# Kolibre web UI (managed)
 redir /kolibre-stage /kolibre-stage/ 308
 handle_path /kolibre-stage/* {
@@ -39,17 +40,27 @@ handle_path /kolibre-stage/* {
 }
 """
 link = root / "current"
-link.symlink_to(release)
+old = link.resolve(strict=True) if link.is_symlink() else None
+assert not link.exists() or old is not None
+next_link = root / "current.next"
+assert not next_link.exists()
+next_link.symlink_to(release)
+next_link.replace(link)
 try:
     # Match the existing application upload limit; no change to unrelated routes.
-    route.write_text(addition + before.replace("max_size 25MB", "max_size 300MB"))
-    subprocess.run(
-        ["caddy", "validate", "--config", "/etc/caddy/Caddyfile"], check=True
-    )
-    subprocess.run(["systemctl", "reload", "caddy"], check=True)
+    if marker not in before:
+        route.write_text(addition + before.replace("max_size 25MB", "max_size 300MB"))
+        subprocess.run(
+            ["caddy", "validate", "--config", "/etc/caddy/Caddyfile"], check=True
+        )
+        subprocess.run(["systemctl", "reload", "caddy"], check=True)
 except Exception:
     route.write_text(before)
-    link.unlink()
+    if old is None:
+        link.unlink()
+    else:
+        next_link.symlink_to(old)
+        next_link.replace(link)
     raise
 manifest = {
     "git_commit": a.revision,

@@ -121,3 +121,17 @@ Kolibre baseline: `345419c29dccf1557b892ae61676e02f1dc37a06`, branch `feature/mc
 Environment: Ubuntu 26.10 x86_64, Python 3.12.14, Node 22.23.2, FastMCP 3.4.11, MCP SDK 1.30.0. Dependencies are pinned in `requirements.lock` and `oidc/package-lock.json`. Original/replay Git trees are identical: Kolibre `9be2f844fd55a597ecdc1ae426273fee336cd655`, CalibreMCP `a04e917a6c39fe6a1c617f93a79ef01481c60d43`.
 
 Run `./setup.sh` then `./test.sh`. See [README.md](README.md), [COMMANDS.md](COMMANDS.md) for executed commands, and [AUDIT.md](AUDIT.md) for requirement-by-requirement evidence. The fresh clone/venv replay is retained under `runtime/replay-clean` for inspection; raw logs are under `evidence/`.
+
+## Import-page crash fix — 2026-11-07
+
+User screenshot: ImportPage-oJfs3mIn.js:1:19508 `Cannot read properties of
+undefined (reading 'length')`. Deployed API for both users returns
+`{"running":false}` when no job is owned by that reader. Frontend's unchecked
+IngestImportJob cast caused lavoro?.failed.length to dereference undefined.
+The job query now normalizes an idle shape, preserving real progress/errors.
+Backend privacy response is unchanged. Two Node regression tests pass and
+TypeScript/Vite build passes. Corrected web bundle deployed without backend,
+bridge or KOReader restart; served chunk matches build SHA256. Browser rendered
+page not observed through automation. User should reload the crashed page.
+This fixes the Import crash, not an independently demonstrated EPUB reader bug.
+See verification/import-ui-fix-2026-11-07.json and frontend-react/tests/ingestImportJob.test.mjs.

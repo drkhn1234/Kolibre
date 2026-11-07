@@ -1,0 +1,13 @@
+{
+  "web_revision": "f48ee63f68e429300a0bb7c67d38628bfe3b7ede",
+  "cause": "frontend assumed failed array on privacy-scoped idle response",
+  "api_idle_both_users": {
+    "running": false
+  },
+  "focused_regressions": 2,
+  "frontend_build": "passed",
+  "deployed_import_chunk": "ImportPage-Cn4WE992.js",
+  "chunk_sha256": "ad5d1d178519d6e67db34acb7a0dd6ad4c0161f72f1432109e3beea678d53cd0",
+  "served_chunk_matches": true,
+  "interactive_browser": "not observed; browser automation unavailable"
+}

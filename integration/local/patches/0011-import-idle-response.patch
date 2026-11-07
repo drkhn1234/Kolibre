@@ -1,0 +1,123 @@
+From f48ee63f68e429300a0bb7c67d38628bfe3b7ede Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 22:19:24 +0300
+Subject: [PATCH] Normalize private idle import-job responses before rendering
+ Import page
+
+---
+ frontend-react/src/lib/ingestImportJob.ts     | 29 +++++++++++++++++++
+ frontend-react/src/lib/ingestQueries.ts       | 15 ++--------
+ frontend-react/tests/ingestImportJob.test.mjs | 25 ++++++++++++++++
+ 3 files changed, 57 insertions(+), 12 deletions(-)
+ create mode 100644 frontend-react/src/lib/ingestImportJob.ts
+ create mode 100644 frontend-react/tests/ingestImportJob.test.mjs
+
+diff --git a/frontend-react/src/lib/ingestImportJob.ts b/frontend-react/src/lib/ingestImportJob.ts
+new file mode 100644
+index 0000000..e4b41c9
+--- /dev/null
++++ b/frontend-react/src/lib/ingestImportJob.ts
+@@ -0,0 +1,29 @@
++export interface IngestImportJob {
++  running: boolean
++  total: number
++  processed: number
++  imported: number
++  failed: Array<{ id: number; title: string; error: string }>
++  current: number | null
++  started_at: string | null
++  finished_at: string | null
++  cancelled: boolean
++}
++
++// The multi-user API intentionally returns only { running: false } when
++// there is no job owned by this reader. Keep that privacy boundary while
++// giving the view a consistent idle shape (including failed.length).
++export function normalizeIngestImportJob(job: Partial<IngestImportJob>): IngestImportJob {
++  return {
++    running: false,
++    total: 0,
++    processed: 0,
++    imported: 0,
++    current: null,
++    started_at: null,
++    finished_at: null,
++    cancelled: false,
++    ...job,
++    failed: Array.isArray(job.failed) ? job.failed : [],
++  }
++}
+diff --git a/frontend-react/src/lib/ingestQueries.ts b/frontend-react/src/lib/ingestQueries.ts
+index 50297ef..ddc1354 100644
+--- a/frontend-react/src/lib/ingestQueries.ts
++++ b/frontend-react/src/lib/ingestQueries.ts
+@@ -1,6 +1,7 @@
+ import { useQuery } from '@tanstack/react-query'
+ import { api } from './api'
+ import type { IngestedBook } from '@/types/ingest'
++import { normalizeIngestImportJob, type IngestImportJob } from './ingestImportJob'
+ 
+ // Stessa chiave sia qui sia in ingestActions.ts (invalidazione dopo
+ // upload/import) — se in futuro la sidebar vuole un badge col conteggio
+@@ -78,17 +79,7 @@ export function useIngestPage(opts: { offset: number; limit: number }, abilitata
+ // ferma, e lo stato si puo' interrogare da qualunque pagina. Stessa forma del
+ // giro di massa sugli autori.
+ 
+-export interface IngestImportJob {
+-  running: boolean
+-  total: number
+-  processed: number
+-  imported: number
+-  failed: Array<{ id: number; title: string; error: string }>
+-  current: number | null
+-  started_at: string | null
+-  finished_at: string | null
+-  cancelled: boolean
+-}
++export type { IngestImportJob } from './ingestImportJob'
+ 
+ export const INGEST_JOB_KEY = ['ingest-import-job'] as const
+ 
+@@ -98,7 +89,7 @@ export function useIngestImportJob() {
+     queryFn: async () => {
+       const { data, error } = await api.GET('/api/kolibre/ingest/import-job')
+       if (error) throw error
+-      return data as unknown as IngestImportJob
++      return normalizeIngestImportJob(data as unknown as Partial<IngestImportJob>)
+     },
+     // Si interroga spesso solo mentre lavora: a riposo una volta ogni tanto
+     // basta per accorgersi di un lavoro avviato da un'altra scheda.
+diff --git a/frontend-react/tests/ingestImportJob.test.mjs b/frontend-react/tests/ingestImportJob.test.mjs
+new file mode 100644
+index 0000000..6cfafbb
+--- /dev/null
++++ b/frontend-react/tests/ingestImportJob.test.mjs
+@@ -0,0 +1,25 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { normalizeIngestImportJob } from '../src/lib/ingestImportJob.ts'
++
++test('privacy-scoped idle response supports Import page rendering', () => {
++  const job = normalizeIngestImportJob({ running: false })
++  assert.equal(job.failed.length, 0)
++  assert.equal(job.total, 0)
++  assert.equal(job.imported, 0)
++  assert.equal(job.current, null)
++  assert.equal(job.running, false)
++  assert.equal(!job.running && job.failed.length > 0, false)
++})
++
++test('preserves real job progress and failures instead of hiding them', () => {
++  const response = {
++    running: true, total: 3, processed: 2, imported: 1,
++    failed: [{ id: 8, title: 'Synthetic book', error: 'Import failed' }],
++    current: 9, started_at: '2026-11-07T19:00:00', finished_at: null,
++    cancelled: false,
++  }
++  assert.deepEqual(normalizeIngestImportJob(response), response)
++  const idle = normalizeIngestImportJob({ running: false })
++  assert.deepEqual(idle.failed, [])
++})
+-- 
+2.55.0
+
