@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 import type { IngestedBook } from '@/types/ingest'
+import { normalizeIngestImportJob, type IngestImportJob } from './ingestImportJob'
 
 // Stessa chiave sia qui sia in ingestActions.ts (invalidazione dopo
 // upload/import) — se in futuro la sidebar vuole un badge col conteggio
@@ -78,17 +79,7 @@ export function useIngestPage(opts: { offset: number; limit: number }, abilitata
 // ferma, e lo stato si puo' interrogare da qualunque pagina. Stessa forma del
 // giro di massa sugli autori.
 
-export interface IngestImportJob {
-  running: boolean
-  total: number
-  processed: number
-  imported: number
-  failed: Array<{ id: number; title: string; error: string }>
-  current: number | null
-  started_at: string | null
-  finished_at: string | null
-  cancelled: boolean
-}
+export type { IngestImportJob } from './ingestImportJob'
 
 export const INGEST_JOB_KEY = ['ingest-import-job'] as const
 
@@ -98,7 +89,7 @@ export function useIngestImportJob() {
     queryFn: async () => {
       const { data, error } = await api.GET('/api/kolibre/ingest/import-job')
       if (error) throw error
-      return data as unknown as IngestImportJob
+      return normalizeIngestImportJob(data as unknown as Partial<IngestImportJob>)
     },
     // Si interroga spesso solo mentre lavora: a riposo una volta ogni tanto
     // basta per accorgersi di un lavoro avviato da un'altra scheda.
