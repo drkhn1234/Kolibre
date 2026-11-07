@@ -5,6 +5,8 @@ after it, finish moving only the owner's personal metadata. Never delete
 another user's data or a source book during recovery.
 """
 import json
+import hashlib
+import os
 from datetime import datetime
 from uuid import uuid4
 
@@ -17,6 +19,45 @@ from ..calibre.library import CalibreLibrary
 from .private_book_move import migrate_owner_records
 
 _ACTIVE_STATES = ("copying", "ready", "source_deleted", "needs_review")
+
+
+def _format_files(library, book_id):
+    """Catalog rows alone cannot prove that a book's bytes survived a crash."""
+    files = {}
+    for row in library.get_formats(book_id):
+        path = library.get_format_file_path(book_id, row["format"])
+        if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            raise ValueError("Book format missing or incomplete")
+        files[row["format"]] = path
+    return files
+
+
+def source_safe_for_rollback(source, source_id, target, target_id):
+    """Prove source files exist and agree with every registered target copy.
+
+    Comparing full SHA-256 digests detects truncation and same-size corruption.
+    Calibre's recorded sizes may be stale after EPUB metadata rewrites, so
+    they are not evidence of file integrity. Any uncertainty preserves both
+    copies, even if the corrupt file might actually be the target.
+    """
+    try:
+        source_files = _format_files(source, source_id)
+        if not source_files:
+            return False
+        target_formats = target.get_formats(target_id)
+        if not target_formats:
+            return False
+        for row in target_formats:
+            fmt = row["format"]
+            target_path = target.get_format_file_path(target_id, fmt)
+            if fmt not in source_files or not target_path:
+                return False
+            with open(source_files[fmt], "rb") as src, open(target_path, "rb") as dst:
+                if hashlib.file_digest(src, "sha256").digest() != hashlib.file_digest(dst, "sha256").digest():
+                    return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def begin(db: Session, user_id: int, source: str, book_id: int, target: str):
@@ -108,7 +149,14 @@ async def reconcile(db: Session, move, write_queue):
         return serialize_move(move)
 
     if source_present:
-        # Source is intact; it is safe to undo the private copy. Queue must
+        # A surviving row does not prove its files survived. Never discard
+        # the only valid copy merely because the source catalog still lists it.
+        if not source_safe_for_rollback(source, move.source_book_id, target, target_id):
+            move.state = "needs_review"
+            move.failure_code = "source_integrity_unverified"
+            db.commit()
+            return serialize_move(move)
+        # Source files are intact; it is safe to undo the private copy. Queue must
         # NOT replay this deletion at a later time if it fails now.
         try:
             await write_queue.submit(
@@ -133,7 +181,11 @@ async def reconcile(db: Session, move, write_queue):
     # A source disappearing while the copy was still in progress does NOT
     # prove the new private copy was complete. Keep its journal locked and
     # request manual review rather than silently accepting an incomplete book.
-    if move.state == "copying":
+    if move.state not in ("ready", "source_deleted"):
+        # Review is not a durable ready checkpoint. Retrying a previously
+        # incomplete copy must never promote it to a completed move.
+        if move.state == "needs_review":
+            return serialize_move(move)
         move.state = "needs_review"
         move.failure_code = "source_missing_before_copy_ready"
         db.commit()
