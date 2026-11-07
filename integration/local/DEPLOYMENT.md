@@ -1,3 +1,5 @@
+> Current first-use deployment and supported LanceDB retrieval: [FIRST_USE.md](FIRST_USE.md). Web interface is now available alongside existing BookOrbit.
+
 > New knowledge-retrieval milestone: see [KNOWLEDGE.md](KNOWLEDGE.md) for current sources, fifth-tool staging tests and limitations; [CHATGPT_ACCEPTANCE.md](CHATGPT_ACCEPTANCE.md) records the actual four-tool ChatGPT acceptance. Earlier results below remain historical.
 
 # Oracle staging execution log

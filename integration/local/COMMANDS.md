@@ -204,3 +204,17 @@ All authentication material stayed in memory or mode-0600 runtime files.
   worker indexed automatically. Public semantic-only top-1 query smoke passes.
 - No old full Calibre suite repetition, paid compute, PR merges or unrelated
   container restarts. Sources/helpers and recovery instructions: KNOWLEDGE.md.
+
+## LanceDB and first-use web deployment
+
+Focused tests: tests/test_knowledge.py1pass23.02s; backend test_knowledge_index2OK;
+Calibre test_lance_authorized_storage1pass1.04s; existing bridge13pass2.72s.
+Public knowledge_probe.py native/OIDC PASS after deployment (lance-public-final.log).
+Frontend TypeScript/Vite build with API/base paths passes; deploy_web.py publishes
+hash-manifested bundle and Caddy route with validation and rollback. HTTPS UI,
+assets, SPA deep route and reader HTML200; BookOrbit root200. No browser-rendered
+login observation: computer-use tab creation failed (timeoutMs tool error).
+Initial Lance merge used target.metadata prefix unsupported by actual installed
+version: corrected to metadata.book_id and regression passed. Backend Calibre
+module import required isolated CALIBRE_MCP_LOG_FILE, now explicitly configured.
+No TLS/home isolation weakened. Full source revisions and use: FIRST_USE.md.

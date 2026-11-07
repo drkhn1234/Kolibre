@@ -1,0 +1,12 @@
+native query seconds 3.869 results 6
+native query seconds 3.986 results 6
+native query seconds 0.313 results 2
+native query seconds 0.683 results 2
+native query seconds 0.413 results 6
+native five-tool retrieval, own notes, foreign denial, live revoke/reconnect/restore: PASS
+oidc query seconds 1.393 results 6
+oidc query seconds 1.548 results 6
+oidc query seconds 0.577 results 2
+oidc query seconds 1.236 results 2
+oidc query seconds 0.684 results 6
+oidc five-tool retrieval, own notes, foreign denial, live revoke/reconnect/restore: PASS

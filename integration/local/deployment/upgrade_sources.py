@@ -51,6 +51,13 @@ def main():
             if path.is_file() and ".venv" not in path.relative_to(target).parts
         }
         releases.append((root, old, target, revision, files))
+    # Pin backend retrieval imports to this exact CalibreMCP source release.
+    # Dependencies already exist in the isolated environment; never import legacy tools.
+    backend_target = releases[0][2]
+    bridge_target = releases[1][2]
+    (
+        backend_target / ".venv/lib/python3.12/site-packages/kolibre_retrieval.pth"
+    ).write_text(str(bridge_target / "src") + "\n")
     try:
         for root, old, target, revision, files in releases:
             temporary = root / "current.next"

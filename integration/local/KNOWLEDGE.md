@@ -1,3 +1,5 @@
+> Superseded storage decision: retrieval now reuses CalibreMCP LanceVectorStore/LanceDB. Read [FIRST_USE.md](FIRST_USE.md) for current deployed revisions, URLs and focused results. The SQLite-vector discussion below describes the previous iteration.
+
 # Knowledge retrieval — initial vertical slice, 2026-11-07
 
 ## Decision and trade-offs

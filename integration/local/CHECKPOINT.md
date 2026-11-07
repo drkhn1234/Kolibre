@@ -1,3 +1,12 @@
+> Latest deployment: use FIRST_USE.md. Vectors migrated to CalibreMCP's LanceDB
+> store; web interface live https://books.drkhn.site/kolibre-stage/ . Backend
+> d03ec0416fa6cd93ea8f2dda09f45e263c1e712f, bridge
+> 60d0b39997a921b4fcc91cade97037e64edb3da2, web
+> a5a9b43eec5b9c92796cdbf69ac04896267218d8. Original services/user state retained.
+> Scoped local/public tests pass; no KOReader sync or new broad campaign.
+> User's next action is ordinary first use, not another acceptance checklist.
+> Earlier SQLite-vector sections below are historical, superseded by FIRST_USE.md.
+
 # Kolibre–CalibreMCP checkpoint — 2026-11-07, knowledge retrieval
 
 ## 1. Current objective and status

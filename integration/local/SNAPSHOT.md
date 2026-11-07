@@ -1,5 +1,5 @@
 # Integration lab snapshot
 
-Source lab revision: b1604941b540ec1edd9025f98164d29aa6726ece
+Lab revision: ec81a07a66ec5f85c1f89d7e27862eac54de59b8
 
-See KNOWLEDGE.md and CHECKPOINT.md. Runtime secrets/databases/raw logs excluded.
+Current use/recovery: FIRST_USE.md and CHECKPOINT.md. Secrets/runtime excluded.

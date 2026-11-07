@@ -1,3 +1,5 @@
+> Current first-use deployment and supported LanceDB retrieval: [FIRST_USE.md](FIRST_USE.md). Web interface is now available alongside existing BookOrbit.
+
 # ChatGPT interoperability milestone
 
 Authorized scope: local repositories and Oracle staging; preserve BookOrbit and

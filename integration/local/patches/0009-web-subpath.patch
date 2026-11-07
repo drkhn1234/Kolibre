@@ -1,0 +1,85 @@
+From a5a9b43eec5b9c92796cdbf69ac04896267218d8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 21:04:17 +0300
+Subject: [PATCH] Support HTTPS reverse-proxy subpath deployment for web UI and
+ reader
+
+---
+ frontend-react/src/lib/backendUrl.ts           | 4 ++--
+ frontend-react/src/lib/readerActions.ts        | 6 +++---
+ frontend-react/src/pages/Reader/ReaderPage.tsx | 2 +-
+ frontend-react/src/router.tsx                  | 2 +-
+ 4 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/frontend-react/src/lib/backendUrl.ts b/frontend-react/src/lib/backendUrl.ts
+index cae111b..64a68c4 100644
+--- a/frontend-react/src/lib/backendUrl.ts
++++ b/frontend-react/src/lib/backendUrl.ts
+@@ -21,9 +21,9 @@ const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '8081'
+ // il backend direttamente. In dev, invece, il proxy di vite.config.ts si
+ // occupa di '/api'/'/token' e questa costante resta stringa vuota (relativa),
+ // stesso principio già usato da frontend/vite.config.js.
+-export const baseUrl = import.meta.env.DEV
++export const baseUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV
+   ? ''
+-  : `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`
++  : `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`)
+ 
+ // Le rotte che servono IMMAGINI e font, e che dal 01/10/2026 vogliono un
+ // token. Un `<img src>` non puo' allegare un header `Authorization`, e lo
+diff --git a/frontend-react/src/lib/readerActions.ts b/frontend-react/src/lib/readerActions.ts
+index 9eeadad..2d5320d 100644
+--- a/frontend-react/src/lib/readerActions.ts
++++ b/frontend-react/src/lib/readerActions.ts
+@@ -114,7 +114,7 @@ export async function openBookInReader(
+     if (opts?.notaId != null) params.set('notaId', String(opts.notaId))
+   }
+   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
+-  win!.location.href = `/${entry}?${params.toString()}`
++  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
+   return true
+ }
+ 
+@@ -137,7 +137,7 @@ export async function openBookFormatInReader(book: ReadableBook, library: string
+     token: token || '',
+   })
+   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
+-  win!.location.href = `/${entry}?${params.toString()}`
++  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
+   return true
+ }
+ 
+@@ -156,6 +156,6 @@ export async function openIngestBookInReader(staging: { id: number; title: strin
+     token: token || '',
+   })
+   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
+-  win!.location.href = `/${entry}?${params.toString()}`
++  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
+   return true
+ }
+diff --git a/frontend-react/src/pages/Reader/ReaderPage.tsx b/frontend-react/src/pages/Reader/ReaderPage.tsx
+index c9ed5a4..114f3f4 100644
+--- a/frontend-react/src/pages/Reader/ReaderPage.tsx
++++ b/frontend-react/src/pages/Reader/ReaderPage.tsx
+@@ -1206,7 +1206,7 @@ export function ReaderPage() {
+       window.history.back()
+       return
+     }
+-    window.location.href = '/'
++    window.location.href = import.meta.env.BASE_URL
+   }
+ 
+   function zonaClick(lato: 'sinistra' | 'destra') {
+diff --git a/frontend-react/src/router.tsx b/frontend-react/src/router.tsx
+index 1af1543..40e9629 100644
+--- a/frontend-react/src/router.tsx
++++ b/frontend-react/src/router.tsx
+@@ -46,4 +46,4 @@ export const router = createBrowserRouter([
+       { path: 'impostazioni', element: <SettingsRoute /> },
+     ],
+   },
+-])
++], { basename: import.meta.env.BASE_URL })
+-- 
+2.55.0
+

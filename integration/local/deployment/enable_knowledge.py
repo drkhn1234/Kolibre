@@ -17,7 +17,9 @@ path = Path("/etc/kolibre-stage/backend.env")
 lines = [
     l
     for l in path.read_text().splitlines()
-    if not l.startswith(("HF_HOME=", "HF_HUB_DISABLE_IMPLICIT_TOKEN="))
+    if not l.startswith(
+        ("HF_HOME=", "HF_HUB_DISABLE_IMPLICIT_TOKEN=", "CALIBRE_MCP_LOG_FILE=")
+    )
 ]
 path.write_text(
     "\n".join(
@@ -25,6 +27,7 @@ path.write_text(
         + [
             "HF_HOME=/var/lib/kolibre-stage/huggingface",
             "HF_HUB_DISABLE_IMPLICIT_TOKEN=1",
+            "CALIBRE_MCP_LOG_FILE=/var/lib/kolibre-stage/calibremcp-retrieval.jsonl",
         ]
     )
     + "\n"
