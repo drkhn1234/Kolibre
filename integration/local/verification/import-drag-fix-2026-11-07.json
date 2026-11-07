@@ -1,0 +1,9 @@
+{
+  "web_revision": "ce8fed277b731dcad30e77c7803c81a986cb9bec",
+  "symptom": "drag overlay flickers in user screencast",
+  "fix": "non-interactive overlay and nested file-drag depth tracking",
+  "build": "passed",
+  "deployed_chunk_sha256": "0dffe3ece0042a7fbc6ca72217673cc0e59aeafbf0a586eb639876b34ae0a000",
+  "deployed_chunk_matches": true,
+  "browser_reproduction_after_fix": "not observed"
+}

@@ -1,3 +1,5 @@
+> Import drag/drop overlay fix deployed: ce8fed277b731dcad30e77c7803c81a986cb9bec. User screencast showed hover flicker; visual overlay now ignores pointer events and drag depth tracks child transitions. TypeScript/Vite build passes and served bundle matches. User should refresh and retry dragging a file. Backend/sync unchanged; post-fix browser interaction not yet observed.
+
 > Import-page crash corrected and web bundle deployed at f48ee63f68e429300a0bb7c67d38628bfe3b7ede. Sparse privacy-scoped idle job response is normalized before rendering; two frontend regressions and build pass. Backend/bridge/KOReader untouched. Reload crashed browser page. See RESULTS.md final section and verification/import-ui-fix-2026-11-07.json.
 
 > KOReader language bug fixed: plugin0.6.17 follows reader locale/explicit override rather than hardcoded Italian. Local plugin updated; explicit English staged in private gconfig for next launch. User screenshot confirms normal device connection/pending delivery; manual sync is in KOReader Tools → Kolibre (old label Sincronizza tutto), not web UI. Locale regression passes. Backend source b21ecc1 (full hash via Git); bridge/web unchanged.

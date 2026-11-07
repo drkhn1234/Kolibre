@@ -135,3 +135,17 @@ bridge or KOReader restart; served chunk matches build SHA256. Browser rendered
 page not observed through automation. User should reload the crashed page.
 This fixes the Import crash, not an independently demonstrated EPUB reader bug.
 See verification/import-ui-fix-2026-11-07.json and frontend-react/tests/ingestImportJob.test.mjs.
+
+## Import drag-overlay flicker — 2026-11-07
+
+User's six-second local screencast shows Import's drop overlay repeatedly appearing
+and disappearing as a file is dragged inside it. Source had an event-targetable
+overlay plus an unconditional bubbling dragleave reset. Fix: pointer-events-none
+on the visual overlay; count nested file dragenter/dragleave transitions; clear
+state on drop and advertise a copy operation. Non-file drags do not trigger the
+overlay. File upload, visibility selection and backend behavior unchanged.
+TypeScript/Vite build and diff whitespace checks pass. Updated immutable web
+bundle deployed and served content matches local build. Post-fix interactive
+browser reproduction remains for ordinary user retry; no claim of observed GUI
+success. Raw recording/extracted frames stay local and untracked. Compact proof:
+verification/import-drag-fix-2026-11-07.json.
