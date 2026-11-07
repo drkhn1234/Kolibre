@@ -79,6 +79,7 @@ export function ImportTab() {
   const [uploading, setUploading] = useState(false)
   const [rejected, setRejected] = useState<IngestRejectedFile[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
   const [message, setMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [importingIds, setImportingIds] = useState<Set<number>>(new Set())
   const [discardingIds, setDiscardingIds] = useState<Set<number>>(new Set())
@@ -115,6 +116,7 @@ export function ImportTab() {
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault()
+    dragDepth.current = 0
     setDragOver(false)
     void handleFiles(e.dataTransfer?.files ?? null)
   }
@@ -348,15 +350,27 @@ export function ImportTab() {
   return (
     <div
       className="relative flex flex-col gap-3"
-      onDragOver={(e) => {
+      onDragEnter={(e) => {
+        if (!Array.from(e.dataTransfer.types).includes('Files')) return
         e.preventDefault()
+        dragDepth.current += 1
         setDragOver(true)
       }}
-      onDragLeave={() => setDragOver(false)}
+      onDragOver={(e) => {
+        if (!Array.from(e.dataTransfer.types).includes('Files')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+      }}
+      onDragLeave={() => {
+        // Child-element transitions bubble too; only leaving the complete
+        // drop area ends the drag. The visual overlay cannot intercept it.
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (dragDepth.current === 0) setDragOver(false)
+      }}
       onDrop={handleDrop}
     >
       {dragOver && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/95">
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-background/95">
           <div className="flex flex-col items-center gap-2 text-center font-semibold text-primary">
             <Upload className="size-8" />
             {t('ingest.importTab.dropHint')}
