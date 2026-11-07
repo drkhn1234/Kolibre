@@ -62,7 +62,7 @@ resource audience validation and discovery. A predefined confidential client
 avoids broadening the existing source/URI restrictions on anonymous Keycloak
 registration. It has an exact OpenAI callback, consent, only `books:read`, no
 password/client-credentials/implicit grants, no web origins and required S256.
-Client-secret POST exchange, real refresh rotation and replay rejection were
+Client-secret POST and HTTP Basic exchange, real refresh rotation and replay rejection were
 tested. Optional offline access is enabled only for this predefined client and
 the two synthetic readers, with consent, a configured eight-hour maximum and
 30-minute idle timeout; provider refresh_expires_in values are bounded. Both

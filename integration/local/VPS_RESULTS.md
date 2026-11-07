@@ -214,3 +214,8 @@ the tested repositories exactly after all patches applied with zero fuzz. The
 pinned local-provider bootstrap verified cached artifact checksums; all three
 upstream immutable download URLs returned HTTP 200. This was not a second full
 fresh dependency-install replay.
+
+A final predefined-client HTTP Basic-authenticated code/S256 exchange, refresh,
+verified Kolibre identity and refresh-token revocation also passed. Evidence:
+basic-client-auth.log (short output tracked in verification/). POST client
+credentials were tested separately by both main probe scripts.

@@ -278,3 +278,18 @@ This checkpoint captures tested implementation anchors. Its own commit and
 subsequent packaging commits necessarily follow those anchors; their exact
 hashes can be obtained from Git without rerunning completed tests. No credentials,
 JWTs, signing keys, databases or private book contents belong in Git.
+
+Final publication audit (captured before the final documentation-only record):
+workspace HEAD `c7d145312565321cbd759e29b95209617245b2d6`;
+Kolibre development HEAD `f16521209f029229feb7dbf3697c662336daa319`;
+OIDC PR HEAD `646f6f546d8bdce903852c7bc8ce5fba15603eb3`;
+foundation PR HEAD `1e12ea76f516a19882d41e5c3ee9686beba11e85`;
+Calibre development/PR HEAD `072c06541585dc494ad137faf84603f8d6617194`.
+These were clean and pushed; OIDC/development trees matched. The final docs-only
+publication commit necessarily follows this captured state. Its SNAPSHOT.md
+records the exported lab revision. Deployed application/helpers remain the exact
+implementation anchors above. See verification/2026-11-07/publication.json.
+No local lab provider, Inspector daemon, test/probe runner or migration remained
+at final inspection. Existing VPS services remain active/healthy. A final
+client_secret_basic code/refresh/revocation probe also passed; POST was verified
+separately. Both client authentication methods retain per-reader identity.

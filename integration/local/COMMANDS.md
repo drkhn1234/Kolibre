@@ -175,3 +175,9 @@ The patch-chain smoke reconstruction used git archive at each pinned baseline,
 patch --batch --fuzz=0 -p1 for every shipped patch, then byte-compared all tracked
 backend files (102) and bridge source/tests (335) with the tested checkouts.
 Cached userspace-provider artifacts passed setup_local_keycloak.sh checksums.
+
+A final one-off .venv Python/httpx probe repeated the predefined-client
+code/S256 exchange and refresh/revocation using httpx.BasicAuth(client_id,
+client_secret), without client_secret in the form. The resulting bearer was
+verified at /api/users/me as founder. Output: basic-client-auth.log; PASS.
+All authentication material stayed in memory or mode-0600 runtime files.
