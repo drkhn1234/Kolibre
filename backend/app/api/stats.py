@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, database, auth, schemas
-from ..services import stats_service
+from ..services import stats_service, permessi
 from .libraries import default_library_param, resolve_default_library_folder
 
 router = APIRouter(prefix="/api/kolibre/stats", tags=["stats"])
@@ -210,6 +210,9 @@ def pair_orphan_sessions(
     if not md5 or not library or not calibre_book_id:
         raise HTTPException(status_code=400, detail="md5, library e calibre_book_id sono obbligatori")
 
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
     result = stats_service.pair_orphan_sessions(db, current_user.id, md5, library, int(calibre_book_id))
     stats_service.refresh_stats_cache(db)
     return {"status": "ok", **result}

@@ -12,6 +12,7 @@ export const INGEST_ACCEPT = '.epub,.pdf,.mobi,.azw3,.azw,.fb2,.txt'
 
 export interface IngestedBook {
   id: number
+  isPrivate?: boolean
   title: string
   author: string
   formats: string[]

@@ -514,7 +514,10 @@ def get_koreader_plugin_file(file_path: str):
 
 
 @router.get("/logs")
-def get_server_logs(_chi: models.User = Depends(auth.get_current_active_admin)):
+def get_server_logs(
+    _chi: models.User = Depends(auth.get_current_active_admin),
+    db: Session = Depends(database.get_db),
+):
     """Le ultime cento righe del log del server.
 
     Riservato agli amministratori: quel file contiene i nomi di chi accede
@@ -522,6 +525,12 @@ def get_server_logs(_chi: models.User = Depends(auth.get_current_active_admin)):
     file e i nomi dei dispositivi di tutti. Prima bastava essere autenticati,
     quindi un ospite leggeva l'attivita' di chiunque altro.
     """
+    # Logs are an unstructured mixture of account names, KOReader local
+    # paths, annotations and book titles. Sanitizing only known fields would
+    # be an unreliable privacy boundary. Admins use server-side diagnostics;
+    # application-level admins must not read other users' private activity.
+    if db.query(models.User).count() > 1:
+        raise HTTPException(status_code=403, detail="Raw logs unavailable in multi-user mode")
     if not os.path.exists(config.LOGS_FILE):
         return []
     with open(config.LOGS_FILE, "r") as lf:

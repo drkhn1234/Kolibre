@@ -49,8 +49,12 @@ def resolve_default_library_folder(db: Session, utente: models.User = None):
     """
     if utente is not None:
         visibili = permessi.biblioteche_visibili(db, utente)
-        return visibili[0].folder_name if visibili else None
-    row = db.query(models.Library).order_by(models.Library.sort_order, models.Library.id).first()
+        shared = next((lib for lib in visibili if not lib.is_private), None)
+        return shared.folder_name if shared else (visibili[0].folder_name if visibili else None)
+    # Default uploads always target the first shared library, never a personal one.
+    row = db.query(models.Library).filter(
+        models.Library.is_private.is_(False)
+    ).order_by(models.Library.sort_order, models.Library.id).first()
     return row.folder_name if row else None
 
 
@@ -103,11 +107,14 @@ def default_library_param(
                 status_code=404,
                 detail=NESSUNA_BIBLIOTECA_TUA if (esistono and utente is not None) else NESSUNA_BIBLIOTECA_ESISTE,
             )
-    if utente is not None:
-        riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
-        if riga is not None and not permessi.puo_leggere(db, utente, riga):
-            raise HTTPException(status_code=403, detail=f"Non hai accesso alla biblioteca '{riga.name}'.")
-    return library
+    # Fail closed: an unregistered filesystem folder must NEVER be readable
+    # through a guessed library name while ownership has not been established.
+    if utente is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if riga is None or not permessi.puo_leggere(db, utente, riga):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return riga.folder_name
 
 
 def biblioteca_scrivibile(
@@ -120,11 +127,12 @@ def biblioteca_scrivibile(
     Si appoggia a `default_library_param`, quindi chi non puo' nemmeno
     leggere riceve il 403 di la' — e chi legge ma non modifica lo riceve
     qui, con il motivo giusto."""
-    if utente is not None:
-        riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
-        if riga is not None and not permessi.puo_modificare(db, utente, riga):
-            raise HTTPException(status_code=403, detail=f"Non puoi modificare la biblioteca '{riga.name}'.")
-    return library
+    if utente is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    riga = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if riga is None or not permessi.puo_modificare(db, utente, riga):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return riga.folder_name
 
 
 def library_display_name(db: Session, folder_name: str) -> str:
@@ -157,6 +165,12 @@ def sync_library_registry(db: Session) -> None:
     deleted_folder_names = {row.folder_name for row in db.query(models.DeletedLibraryFolder.folder_name).all()}
     for folder_name in sorted(os.listdir(config.LIBRARIES_DIR)):
         if folder_name in known_folder_names or folder_name in deleted_folder_names:
+            continue
+        # Personal Calibre libraries are created on disk before registration.
+        # If the process crashes between those steps, never auto-register an
+        # unowned private_* folder as a public/founder-readable library.
+        # Recovery must establish its owner explicitly, out of band.
+        if folder_name.startswith("private_"):
             continue
         db_path = os.path.join(config.library_path(folder_name), "metadata.db")
         if not os.path.exists(db_path):
@@ -207,6 +221,17 @@ def resolve_folder_name(db: Session, name: str) -> str:
         (models.Library.folder_name == name) | (models.Library.name == name)
     ).first()
     return row.folder_name if row else name.lower().replace(" ", "_")
+
+
+def require_library_access(db: Session, user: models.User, name: str, edit: bool = False) -> str:
+    folder = resolve_folder_name(db, name)
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if row is None or not (
+        permessi.puo_modificare(db, user, row) if edit
+        else permessi.puo_leggere(db, user, row)
+    ):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return row.folder_name
 
 
 def _clear_deletion_tombstone(db: Session, folder_name: str) -> None:
@@ -268,10 +293,12 @@ def list_libraries(
             "path": row.path,
             "icon": "library" if i == 0 else "archive",
             "owner": nomi_utenti.get(row.owner_id),
+            "isPrivate": bool(row.is_private),
             "visibleUsers": sorted(filter(None, [nomi_utenti.get(row.owner_id)] + condivisa_con)),
             # Cosa puo' farci chi sta guardando: serve al frontend per
             # nascondere i comandi invece di offrirli e poi rispondere 403.
             "canEdit": permessi.puo_modificare(db, current_user, row),
+            "canUpload": permessi.puo_caricare(db, current_user, row),
             "canShare": permessi.puo_condividere(db, current_user, row),
             "canDelete": permessi.puo_cancellare(db, current_user, row),
             "fulltextEnabled": app_settings.is_fulltext_enabled(db, row.folder_name),
@@ -401,10 +428,21 @@ def import_library(
     if not name or not path:
         raise HTTPException(status_code=400, detail="Name and path required")
 
+    # Importing the on-disk path of a private library as a new shared
+    # symlink must never bypass ownership, including for the founder.
+    # Disallow re-import of ANY already-managed Calibre library. An external
+    # import may point to a wholly separate, previously unregistered folder.
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise HTTPException(status_code=400, detail="An absolute library path is required")
+    canonical = os.path.realpath(path)
+    forbidden_roots = [os.path.realpath(config.LIBRARIES_DIR), os.path.realpath(TRASH_DIR)]
+    forbidden_roots += [os.path.realpath(row.path) for row in db.query(models.Library).all()]
+    for root in forbidden_roots:
+        if canonical == root or canonical.startswith(root + os.sep):
+            raise HTTPException(status_code=403, detail="Managed libraries cannot be re-imported")
     folder_name = name.lower().replace(" ", "_")
     if db.query(models.Library).filter(models.Library.folder_name == folder_name).first():
         raise HTTPException(status_code=409, detail="Una libreria con questo nome esiste già")
-
     db_path = os.path.join(path, "metadata.db")
     if not os.path.exists(db_path):
         CalibreLibrary(path, crea=True)  # bootstraps a fresh Calibre-compatible metadata.db in place
@@ -434,6 +472,7 @@ def import_library(
 
     db.add(models.Library(
         name=name, folder_name=folder_name, path=target_link, sort_order=_next_sort_order(db),
+        owner_id=current_user.id,
     ))
     _clear_deletion_tombstone(db, folder_name)
     db.commit()
@@ -455,6 +494,30 @@ def _trash_entry_path(entry: str) -> str:
     return path
 
 
+def _trash_record(db: Session, entry: str) -> models.TrashedLibrary | None:
+    return db.query(models.TrashedLibrary).filter(
+        models.TrashedLibrary.entry == entry
+    ).first()
+
+
+def _can_manage_trash(db: Session, entry: str, user: models.User) -> bool:
+    """Private trash is owner-only, including when caller is founder/admin."""
+    row = _trash_record(db, entry)
+    if row and row.is_private:
+        return row.owner_id == user.id
+    # Legacy private folders created before the journal were named
+    # private_<owner_id>_<random>; fail closed rather than making them public.
+    if row is None and entry.startswith("private_"):
+        return False
+    return bool(user.is_admin or user.is_founder)
+
+
+def _require_trash_access(db: Session, entry: str, user: models.User) -> models.TrashedLibrary | None:
+    if not _can_manage_trash(db, entry, user):
+        raise HTTPException(status_code=404, detail="Trash entry not found")
+    return _trash_record(db, entry)
+
+
 def _dir_size_bytes(path: str) -> int:
     total = 0
     for root, _dirs, files in os.walk(path):
@@ -467,7 +530,10 @@ def _dir_size_bytes(path: str) -> int:
 
 
 @router.get("/trash")
-def list_trashed_libraries(_chi: models.User = Depends(auth.get_current_active_admin)):
+def list_trashed_libraries(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
     """
     Contents of _trash_libraries — folders moved there by delete_library/
     import_library instead of being deleted outright (see TRASH_DIR's own
@@ -480,6 +546,8 @@ def list_trashed_libraries(_chi: models.User = Depends(auth.get_current_active_a
         return {"items": []}
     items = []
     for entry in sorted(os.listdir(TRASH_DIR)):
+        if not _can_manage_trash(db, entry, current_user):
+            continue
         full_path = os.path.join(TRASH_DIR, entry)
         if not os.path.isdir(full_path):
             continue
@@ -511,7 +579,7 @@ def restore_trashed_library(
     # Come il purge accanto: il cestino contiene biblioteche di chiunque, e
     # elencarle o farne rinascere una non puo' essere alla portata di ogni
     # account. Il purge il controllo ce l'aveva, questi due no.
-    _chi: models.User = Depends(auth.get_current_active_admin),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     The reverse of delete_library: moves a trashed folder back to its
@@ -521,11 +589,12 @@ def restore_trashed_library(
     overwriting whatever is there now would be exactly the kind of
     "eliminates real files with no undo" mistake TRASH_DIR exists to avoid.
     """
+    record = _require_trash_access(db, entry, current_user)
     trash_path = _trash_entry_path(entry)
     if not os.path.isdir(trash_path):
         raise HTTPException(status_code=404, detail="Voce del cestino non trovata")
 
-    folder_name = entry.rpartition("_")[0]
+    folder_name = record.folder_name if record else entry.rpartition("_")[0]
     if not folder_name:
         raise HTTPException(status_code=400, detail="Impossibile ricostruire il nome della libreria da questa voce")
     if db.query(models.Library).filter(models.Library.folder_name == folder_name).first():
@@ -553,10 +622,17 @@ def restore_trashed_library(
         folder_name=folder_name,
         path=target_path,
         sort_order=_next_sort_order(db),
+        owner_id=record.owner_id if record else current_user.id,
+        is_private=bool(record and record.is_private),
     ))
+    if record:
+        db.delete(record)
     _clear_deletion_tombstone(db, folder_name)
     db.commit()
-    log_message("info", "libraries", f"Restored library '{folder_name}' from trash entry '{entry}'")
+    if record and record.is_private:
+        log_message("info", "libraries", "Owner restored private library from trash")
+    else:
+        log_message("info", "libraries", f"Restored library '{folder_name}' from trash entry '{entry}'")
     background_tasks.add_task(_recompute_after_import, folder_name, request.app.state.write_queue)
     return {"status": "ok", "folder_name": folder_name}
 
@@ -564,18 +640,26 @@ def restore_trashed_library(
 @router.delete("/trash/{entry}")
 def purge_trashed_library(
     entry: str,
-    _admin: models.User = Depends(auth.get_current_active_admin),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """Permanent, unrecoverable delete of one trash entry — the action
     TRASH_DIR was always missing a way to actually perform.
 
     Riservato a un amministratore: e' l'unica cancellazione del progetto
     da cui non si torna indietro."""
+    record = _require_trash_access(db, entry, current_user)
     trash_path = _trash_entry_path(entry)
     if not os.path.isdir(trash_path):
         raise HTTPException(status_code=404, detail="Voce del cestino non trovata")
     shutil.rmtree(trash_path)
-    log_message("warning", "libraries", f"Permanently deleted trash entry '{entry}' ({trash_path})")
+    if record:
+        db.delete(record)
+        db.commit()
+    if record and record.is_private:
+        log_message("warning", "libraries", "Owner permanently deleted private trash entry")
+    else:
+        log_message("warning", "libraries", f"Permanently deleted trash entry '{entry}'")
     return {"status": "ok"}
 
 
@@ -584,6 +668,7 @@ async def rescan_library(
     name: str,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Indexes book folders that already exist on disk (Author/Title/file.ext)
@@ -605,7 +690,7 @@ async def rescan_library(
     reached the server only via rescan showed up on a KOReader device with
     no page count at all).
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -679,6 +764,7 @@ async def recompute_page_counts(
     name: str,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     (Re)computes the "Pagine (stimate)" value for every book in a library,
@@ -687,7 +773,7 @@ async def recompute_page_counts(
     books that existed before this feature (imported/rescanned libraries),
     since normal ingest already computes it at import time.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -747,7 +833,7 @@ async def recompute_page_counts(
 
 
 @router.post("/{name}/recompute-hashes")
-def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
+def recompute_hashes(name: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Computes/refreshes the KOReader-compatible partial-MD5 for every format of
     every book in a library — needed so a device's sync handshake can resolve
@@ -755,7 +841,7 @@ def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
     this at import time; this catches books that existed before (imported or
     rescanned libraries).
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -777,7 +863,7 @@ def recompute_hashes(name: str, db: Session = Depends(database.get_db)):
 
 
 @router.get("/{name}/book-paths")
-def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(database.get_db)):
+def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
     """
     Quali libri stanno in una cartella intestata a un autore che non e' piu'
     il loro. Sola lettura: serve a far vedere cosa si sta per spostare prima
@@ -787,7 +873,7 @@ def analyze_book_paths(name: str, limit: int = 50, db: Session = Depends(databas
     biblioteca grande non ha senso spedire diecimila righe a una pagina che
     ne mostra una manciata, ma il totale deve restare quello vero.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -810,6 +896,7 @@ async def repair_book_paths(
     payload: dict | None = None,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """
     Sposta i libri sotto la cartella dell'autore giusto.
@@ -822,7 +909,7 @@ async def repair_book_paths(
     idempotente e riprendibile, quindi la pagina puo' avanzare a blocchi e
     mostrare a che punto e' senza bloccare tutto in un'unica richiesta lunga.
     """
-    folder_name = resolve_folder_name(db, name)
+    folder_name = require_library_access(db, current_user, name, edit=True)
     library_path = config.library_path(folder_name)
     if not os.path.isdir(library_path):
         raise HTTPException(status_code=404, detail="Library not found")
@@ -924,8 +1011,8 @@ def delete_library(
     row = db.query(models.Library).filter(models.Library.folder_name == folder_name).first()
     if not (os.path.exists(lib_path) or os.path.lexists(lib_path)) and not row:
         raise HTTPException(status_code=404, detail="Library not found")
-    if row is not None and not permessi.puo_cancellare(db, current_user, row):
-        raise HTTPException(status_code=403, detail=f"Solo il proprietario può cancellare '{row.name}'.")
+    if row is None or not permessi.puo_cancellare(db, current_user, row):
+        raise HTTPException(status_code=403, detail="Only the library owner can delete this library")
 
     if os.path.islink(lib_path):
         # Zero-copy imported library: the real data lives elsewhere, untouched.
@@ -937,9 +1024,20 @@ def delete_library(
         # a timestamped trash folder instead of shutil.rmtree; recoverable
         # manually until an admin empties the trash for real.
         os.makedirs(TRASH_DIR, exist_ok=True)
-        trashed_path = os.path.join(TRASH_DIR, f"{folder_name}_{int(time.time())}")
+        trash_entry = f"{folder_name}_{int(time.time())}"
+        trashed_path = os.path.join(TRASH_DIR, trash_entry)
+        if os.path.exists(trashed_path):
+            raise HTTPException(status_code=409, detail="Trash entry already exists")
+        db.add(models.TrashedLibrary(
+            entry=trash_entry, folder_name=folder_name,
+            owner_id=row.owner_id, is_private=bool(row.is_private),
+        ))
+        db.commit()  # Record ownership before the filesystem move.
         shutil.move(lib_path, trashed_path)
-        log_message("warning", "libraries", f"Library '{name}' moved to trash: {trashed_path}")
+        if row.is_private:
+            log_message("warning", "libraries", "Owner moved private library to trash")
+        else:
+            log_message("warning", "libraries", f"Library '{name}' moved to trash")
 
     # A fresh, empty folder holding ONLY the tombstone marker (see
     # bootstrap_library) — without this, the very next plain CalibreLibrary(...)
@@ -964,9 +1062,11 @@ def delete_library(
     # again for this folder_name.
     db.query(models.BookHash).filter(models.BookHash.library == folder_name).delete()
     db.query(models.DeviceBook).filter(models.DeviceBook.library == folder_name).delete()
-    db.query(models.ReadingPosition).filter(models.ReadingPosition.library == folder_name).delete()
-    db.query(models.ReadingSession).filter(models.ReadingSession.library == folder_name).delete()
-    purge_orphans_for_library(db, folder_name)
+    if not row.is_private:
+        db.query(models.ReadingPosition).filter(models.ReadingPosition.library == folder_name).delete()
+        db.query(models.ReadingSession).filter(models.ReadingSession.library == folder_name).delete()
+        purge_orphans_for_library(db, folder_name)
+    # A private trash restore must preserve its owner's reading history.
 
     if row:
         db.delete(row)
@@ -975,7 +1075,10 @@ def delete_library(
     db.commit()
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    log_message("info", "libraries", f"Deleted library: {name}")
+    if row.is_private:
+        log_message("info", "libraries", "Owner deleted private library")
+    else:
+        log_message("info", "libraries", f"Deleted library: {name}")
     return {"status": "ok"}
 
 
@@ -1012,7 +1115,7 @@ def library_permissions(
         "condivisioni": [
             {
                 "user_id": p.user_id, "username": nomi.get(p.user_id),
-                "can_edit": p.can_edit, "can_share": p.can_share, "can_manage": p.can_manage,
+                "can_edit": p.can_edit, "can_upload": p.can_upload, "can_share": p.can_share, "can_manage": p.can_manage,
             }
             for p in condivisioni if nomi.get(p.user_id)
         ],
@@ -1041,6 +1144,8 @@ def set_library_permission(
     la scala che porta ovunque: basterebbe darsi can_manage da soli.
     """
     riga = _biblioteca(db, name)
+    if riga.is_private:
+        raise HTTPException(status_code=403, detail="Private libraries cannot be shared")
     if not permessi.puo_condividere(db, current_user, riga):
         raise HTTPException(status_code=403, detail="Non puoi condividere questa biblioteca.")
 
@@ -1067,6 +1172,7 @@ def set_library_permission(
     puo_gestire = permessi.puo_gestire_permessi(db, current_user, riga)
     voluto = {
         "can_edit": bool(payload.get("can_edit")),
+        "can_upload": bool(payload.get("can_upload", esistente.can_upload if esistente else False)),
         "can_share": bool(payload.get("can_share")),
         "can_manage": bool(payload.get("can_manage")),
     }
@@ -1085,6 +1191,11 @@ def set_library_permission(
         )
     # E non lo si da' a se' stessi: con can_share ci si scriveva la propria
     # riga di permesso e ci si aggiungeva can_edit.
+    if voluto["can_upload"] and not permessi.puo_caricare(db, current_user, riga):
+        raise HTTPException(
+            status_code=403,
+            detail="Non puoi concedere il permesso di caricare libri senza possederlo.",
+        )
     if destinatario.id == current_user.id and not puo_gestire:
         raise HTTPException(
             status_code=403,
@@ -1117,6 +1228,8 @@ def set_library_owner(
     nuovo = db.query(models.User).filter(models.User.id == payload.get("user_id")).first()
     if not nuovo:
         raise HTTPException(status_code=404, detail="Utente non trovato")
+    if riga.is_private:
+        raise HTTPException(status_code=403, detail="Private libraries cannot transfer ownership")
     vecchio_id = riga.owner_id
     riga.owner_id = nuovo.id
     # Il vecchio proprietario non resta fuori dalla sua biblioteca: prende

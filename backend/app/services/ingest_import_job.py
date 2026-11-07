@@ -29,6 +29,7 @@ from ..logging_utils import log_message
 _lock = threading.Lock()
 _state = {
     "running": False,
+    "owner_id": None,
     "total": 0,
     "processed": 0,
     "imported": 0,
@@ -44,14 +45,16 @@ _state = {
 _task: Optional[asyncio.Task] = None
 
 
-def status() -> dict:
+def status(user_id: int) -> dict:
     with _lock:
+        if _state["owner_id"] != user_id:
+            return {"running": False}
         snapshot = dict(_state)
         snapshot["failed"] = list(_state["failed"])
         return snapshot
 
 
-def start(voci: list, write_queue) -> bool:
+def start(voci: list, write_queue, user_id: int) -> bool:
     """
     `voci`: lista di (ingest_id, folder_name_destinazione).
     Torna False se un'importazione e' gia' in corso.
@@ -61,12 +64,12 @@ def start(voci: list, write_queue) -> bool:
         if _state["running"]:
             return False
         _state.update(
-            running=True, total=len(voci), processed=0, imported=0,
+            running=True, owner_id=user_id, total=len(voci), processed=0, imported=0,
             failed=[], current=None, cancelled=False,
             started_at=datetime.utcnow().isoformat(), finished_at=None,
         )
     try:
-        _task = asyncio.create_task(_esegui(list(voci), write_queue))
+        _task = asyncio.create_task(_esegui(list(voci), write_queue, user_id))
     except RuntimeError:
         # Nessun event loop: lo stato era gia' stato messo a "in corso", e
         # lasciarlo li' bloccherebbe per sempre ogni avvio successivo con un
@@ -78,16 +81,16 @@ def start(voci: list, write_queue) -> bool:
     return True
 
 
-def stop() -> bool:
+def stop(user_id: int) -> bool:
     """Chiede di fermarsi dopo il libro in corso. Quelli gia' importati restano."""
     with _lock:
-        if not _state["running"]:
+        if not _state["running"] or _state["owner_id"] != user_id:
             return False
         _state["cancelled"] = True
         return True
 
 
-async def _esegui(voci: list, write_queue) -> None:
+async def _esegui(voci: list, write_queue, user_id: int) -> None:
     # Import differito: api/ingest.py importa questo modulo per avviare il
     # lavoro, e importarlo qui in cima farebbe un giro chiuso. La funzione
     # dell'endpoint e' async e accetta argomenti espliciti, quindi si puo'
@@ -103,11 +106,17 @@ async def _esegui(voci: list, write_queue) -> None:
                 break
             _state["current"] = ingest_id
         db = database.SessionLocal()
+        titolo = str(ingest_id)
         try:
-            riga = db.query(models.IngestedBook).filter(models.IngestedBook.id == ingest_id).first()
-            titolo = riga.title if riga else str(ingest_id)
+            # Re-check owner and destination when executing, not just when queued.
+            user = db.query(models.User).filter(models.User.id == user_id).first()
+            if user is None:
+                raise ValueError("Import account no longer exists")
+            from .ingest_access import get_accessible_ingest
+            riga = get_accessible_ingest(db, user, ingest_id)
+            titolo = riga.title
             payload = schemas.IngestImportRequest(id=ingest_id, library=libreria)
-            await import_book_from_ingest(payload, db=db, write_queue=write_queue)
+            await import_book_from_ingest(payload, db=db, write_queue=write_queue, current_user=user)
             with _lock:
                 _state["imported"] += 1
         except Exception as exc:

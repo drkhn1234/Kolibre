@@ -654,6 +654,18 @@ class CalibreLibrary:
         finally:
             conn.close()
 
+    def find_book_by_private_move_token(self, token: str) -> Optional[int]:
+        """Resolve a crash-inserted book without guessing by its title."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT book FROM identifiers WHERE type = ? AND val = ?",
+                ("kolibre-private-move", token),
+            ).fetchone()
+            return int(row["book"]) if row else None
+        finally:
+            conn.close()
+
     def get_book(self, book_id: int) -> Optional[dict]:
         conn = self._connect()
         try:
@@ -820,7 +832,7 @@ class CalibreLibrary:
         conn.execute("DELETE FROM authors WHERE id NOT IN (SELECT author FROM books_authors_link)")
         return " & ".join(sorts)
 
-    def insert_book(self, title: str, author: str, has_cover: bool = False, timestamp: Optional[str] = None) -> int:
+    def insert_book(self, title: str, author: str, has_cover: bool = False, timestamp: Optional[str] = None, private_move_token: Optional[str] = None) -> int:
         """
         Inserts a bare book row (books_insert_trg fills sort/uuid). `path` is left
         at its schema default ('') — the caller computes the on-disk folder name
@@ -851,6 +863,13 @@ class CalibreLibrary:
                 )
             book_id = cur.lastrowid
             self._link_authors(conn, book_id, author)
+            if private_move_token:
+                # Atomic with insertion: recovery can locate a target even if
+                # Kolibre crashes before persisting the returned book ID.
+                conn.execute(
+                    "INSERT INTO identifiers (book, type, val) VALUES (?, ?, ?)",
+                    (book_id, "kolibre-private-move", private_move_token),
+                )
             conn.commit()
             return book_id
         finally:

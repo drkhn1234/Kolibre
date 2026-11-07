@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from .. import config, models, database, auth
 from ..calibre.library import CalibreLibrary
-from ..services import app_settings
+from ..services import app_settings, permessi
 from .libraries import library_display_name
 
 router = APIRouter(prefix="/opds", tags=["opds"])
@@ -82,15 +82,15 @@ def _atom_datetime(value) -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _get_library_row(db: Session, folder_name: str) -> models.Library:
+def _get_library_row(db: Session, folder_name: str, user: models.User) -> models.Library:
     row = db.query(models.Library).filter(models.Library.folder_name == folder_name).first()
-    if not row:
+    if not row or not permessi.puo_leggere(db, user, row):
         raise HTTPException(status_code=404, detail="Libreria non trovata")
     return row
 
 
-def _list_library_rows(db: Session) -> list:
-    return db.query(models.Library).order_by(models.Library.sort_order, models.Library.id).all()
+def _list_library_rows(db: Session, user: models.User) -> list:
+    return permessi.biblioteche_visibili(db, user)
 
 
 def _sub(parent: ET.Element, tag: str, text: str = None, **attrs) -> ET.Element:
@@ -163,7 +163,7 @@ def _library_acquisition_entries(feed: ET.Element, folder_name: str) -> None:
 
 @router.get("")
 def opds_root(db: Session = Depends(database.get_db), _user: models.User = Depends(require_opds_auth)):
-    libs = _list_library_rows(db)
+    libs = _list_library_rows(db, _user)
     if len(libs) == 1:
         folder_name = libs[0].folder_name
         feed = _new_feed("urn:kolibre:root", library_display_name(db, folder_name), "acquisition", "/opds")
@@ -183,7 +183,7 @@ def opds_library(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_opds_auth),
 ):
-    _get_library_row(db, folder_name)
+    _get_library_row(db, folder_name, _user)
     feed = _new_feed(f"urn:kolibre:{folder_name}", library_display_name(db, folder_name),
                       "navigation", f"/opds/{folder_name}")
     _library_acquisition_entries(feed, folder_name)
@@ -198,8 +198,9 @@ def _acquisition_feed(
     page: int,
     sort_key,
     reverse: bool,
+    user: models.User,
 ) -> Response:
-    _get_library_row(db, folder_name)
+    _get_library_row(db, folder_name, user)
     lib = CalibreLibrary(config.library_path(folder_name))
     books = lib.list_books()
     books.sort(key=sort_key, reverse=reverse)
@@ -233,6 +234,7 @@ def opds_all(
         db, folder_name, "all", "Tutti i libri", page,
         sort_key=lambda b: ((b.get("author") or ""), (b.get("title") or "")),
         reverse=False,
+        user=_user,
     )
 
 
@@ -247,6 +249,7 @@ def opds_recent(
         db, folder_name, "recent", "Aggiunti di recente", page,
         sort_key=lambda b: (b.get("timestamp") or ""),
         reverse=True,
+        user=_user,
     )
 
 
@@ -258,7 +261,7 @@ def opds_download(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_opds_auth),
 ):
-    _get_library_row(db, folder_name)
+    _get_library_row(db, folder_name, _user)
     lib = CalibreLibrary(config.library_path(folder_name))
     file_path = lib.get_format_file_path(book_id, format)
     if not file_path:
@@ -273,7 +276,7 @@ def opds_cover(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_opds_auth),
 ):
-    _get_library_row(db, folder_name)
+    _get_library_row(db, folder_name, _user)
     lib = CalibreLibrary(config.library_path(folder_name))
     cover_path = lib.get_cover_path(book_id)
     if not cover_path:

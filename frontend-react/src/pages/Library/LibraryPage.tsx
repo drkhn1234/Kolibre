@@ -40,6 +40,7 @@ import { useSetPageHeader } from '@/lib/pageHeaderContext'
 import { useSettingsDialog } from '@/lib/settingsDialogContext'
 import type { Book } from '@/types/library'
 import { ListError } from '@/components/ListError'
+import { PrivateMovesRecovery } from '@/components/PrivateMovesRecovery'
 import { numero, useLingua } from '@/lib/i18n'
 
 // Stesso pattern di BookDetail/useBookLookup.ts (state di history, non
@@ -415,6 +416,7 @@ export function LibraryPage() {
 
   return (
     <div className="relative flex h-[calc(100vh-72px)] flex-col gap-3 md:h-[calc(100vh-96px)]">
+      <PrivateMovesRecovery />
       <div className="flex flex-wrap items-center gap-2">
         {libraries && libraries.length > 1 && activeLibrary && (
           <DropdownMenu>
