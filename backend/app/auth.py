@@ -94,7 +94,18 @@ def _scegli_chiave() -> str:
 
 SECRET_KEY = _scegli_chiave()
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+def _native_token_lifetime_minutes() -> int:
+    """Allow a shorter operator-selected lifetime without disabling expiry."""
+    try:
+        minutes = int(os.environ.get("KOLIBRE_ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+    except ValueError as exc:
+        raise ValueError("KOLIBRE_ACCESS_TOKEN_EXPIRE_MINUTES must be an integer from 1 to 10080") from exc
+    if not 1 <= minutes <= 10080:
+        raise ValueError("KOLIBRE_ACCESS_TOKEN_EXPIRE_MINUTES must be an integer from 1 to 10080")
+    return minutes
+
+
+ACCESS_TOKEN_EXPIRE_MINUTES = _native_token_lifetime_minutes()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 

@@ -85,9 +85,9 @@ class OIDCUserIdentityTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
-    def signed(self, *, sub="external-sister", iss=ISSUER, aud=AUDIENCE, exp=3600):
+    def signed(self, *, sub="external-sister", iss=ISSUER, aud=AUDIENCE, exp=3600, scope="openid books:read"):
         return jwt.encode({
-            "sub": sub, "iss": iss, "aud": aud,
+            "sub": sub, "iss": iss, "aud": aud, "scope": scope,
             "exp": datetime.now(timezone.utc) + timedelta(seconds=exp),
         }, self.pem, algorithm="RS256", headers={"kid": "key-1"})
 
@@ -114,6 +114,13 @@ class OIDCUserIdentityTests(unittest.TestCase):
                     auth._decode_token(token, self.db)
                 self.assertEqual(ctx.exception.status_code, 401)
 
+    def test_missing_insufficient_or_malformed_scope_is_rejected(self):
+        for scope in (None, "", "openid", "books:read:all", ["books:read"]):
+            with self.subTest(scope=scope):
+                with self.assertRaises(HTTPException) as ctx:
+                    auth._decode_token(self.signed(scope=scope), self.db)
+                self.assertEqual(ctx.exception.status_code, 401)
+
     def test_tampering_subject_invalidates_signature(self):
         token = self.signed()
         h, p, sig = token.split(".")
@@ -122,6 +129,14 @@ class OIDCUserIdentityTests(unittest.TestCase):
         p2 = base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
         with self.assertRaises(HTTPException):
             auth._decode_token(f"{h}.{p2}.{sig}", self.db)
+
+    def test_access_token_requires_explicit_audience(self):
+        claims = jwt.get_unverified_claims(self.signed())
+        del claims["aud"]
+        token = jwt.encode(claims, self.pem, algorithm="RS256", headers={"kid": "key-1"})
+        with self.assertRaises(HTTPException) as ctx:
+            auth._decode_token(token, self.db)
+        self.assertEqual(ctx.exception.status_code, 401)
 
     def test_oidc_is_disabled_without_required_server_configuration(self):
         with patch.dict(os.environ, {"KOLIBRE_OIDC_ISSUER": ""}):

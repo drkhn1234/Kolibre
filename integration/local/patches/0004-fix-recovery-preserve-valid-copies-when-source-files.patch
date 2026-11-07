@@ -1,0 +1,217 @@
+From 337fc711e87c3682047e4d8bfe0d2ce3dcd5a407 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 11:02:13 +0300
+Subject: [PATCH] fix(recovery): preserve valid copies when source files are
+ damaged
+
+---
+ backend/app/services/private_move_recovery.py | 56 ++++++++++++++++++-
+ backend/tests/test_private_book_route.py      | 15 ++++-
+ backend/tests/test_private_move_integrity.py  | 53 ++++++++++++++++++
+ 3 files changed, 121 insertions(+), 3 deletions(-)
+ create mode 100644 backend/tests/test_private_move_integrity.py
+
+diff --git a/backend/app/services/private_move_recovery.py b/backend/app/services/private_move_recovery.py
+index d74c9cc..d218ba1 100644
+--- a/backend/app/services/private_move_recovery.py
++++ b/backend/app/services/private_move_recovery.py
+@@ -5,6 +5,8 @@ after it, finish moving only the owner's personal metadata. Never delete
+ another user's data or a source book during recovery.
+ """
+ import json
++import hashlib
++import os
+ from datetime import datetime
+ from uuid import uuid4
+ 
+@@ -19,6 +21,45 @@ from .private_book_move import migrate_owner_records
+ _ACTIVE_STATES = ("copying", "ready", "source_deleted", "needs_review")
+ 
+ 
++def _format_files(library, book_id):
++    """Catalog rows alone cannot prove that a book's bytes survived a crash."""
++    files = {}
++    for row in library.get_formats(book_id):
++        path = library.get_format_file_path(book_id, row["format"])
++        if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
++            raise ValueError("Book format missing or incomplete")
++        files[row["format"]] = path
++    return files
++
++
++def source_safe_for_rollback(source, source_id, target, target_id):
++    """Prove source files exist and agree with every registered target copy.
++
++    Comparing full SHA-256 digests detects truncation and same-size corruption.
++    Calibre's recorded sizes may be stale after EPUB metadata rewrites, so
++    they are not evidence of file integrity. Any uncertainty preserves both
++    copies, even if the corrupt file might actually be the target.
++    """
++    try:
++        source_files = _format_files(source, source_id)
++        if not source_files:
++            return False
++        target_formats = target.get_formats(target_id)
++        if not target_formats:
++            return False
++        for row in target_formats:
++            fmt = row["format"]
++            target_path = target.get_format_file_path(target_id, fmt)
++            if fmt not in source_files or not target_path:
++                return False
++            with open(source_files[fmt], "rb") as src, open(target_path, "rb") as dst:
++                if hashlib.file_digest(src, "sha256").digest() != hashlib.file_digest(dst, "sha256").digest():
++                    return False
++        return True
++    except (OSError, ValueError, KeyError, TypeError):
++        return False
++
++
+ def begin(db: Session, user_id: int, source: str, book_id: int, target: str):
+     if not user_id or source == target:
+         raise ValueError("Move must have an owner and separate libraries")
+@@ -108,7 +149,14 @@ async def reconcile(db: Session, move, write_queue):
+         return serialize_move(move)
+ 
+     if source_present:
+-        # Source is intact; it is safe to undo the private copy. Queue must
++        # A surviving row does not prove its files survived. Never discard
++        # the only valid copy merely because the source catalog still lists it.
++        if not source_safe_for_rollback(source, move.source_book_id, target, target_id):
++            move.state = "needs_review"
++            move.failure_code = "source_integrity_unverified"
++            db.commit()
++            return serialize_move(move)
++        # Source files are intact; it is safe to undo the private copy. Queue must
+         # NOT replay this deletion at a later time if it fails now.
+         try:
+             await write_queue.submit(
+@@ -133,7 +181,11 @@ async def reconcile(db: Session, move, write_queue):
+     # A source disappearing while the copy was still in progress does NOT
+     # prove the new private copy was complete. Keep its journal locked and
+     # request manual review rather than silently accepting an incomplete book.
+-    if move.state == "copying":
++    if move.state not in ("ready", "source_deleted"):
++        # Review is not a durable ready checkpoint. Retrying a previously
++        # incomplete copy must never promote it to a completed move.
++        if move.state == "needs_review":
++            return serialize_move(move)
+         move.state = "needs_review"
+         move.failure_code = "source_missing_before_copy_ready"
+         db.commit()
+diff --git a/backend/tests/test_private_book_route.py b/backend/tests/test_private_book_route.py
+index 4366b1f..b3dcf14 100644
+--- a/backend/tests/test_private_book_route.py
++++ b/backend/tests/test_private_book_route.py
+@@ -4,6 +4,8 @@ Only Calibre's disk operations are mocked; authorization, private routing,
+ record migration and persistence execute against real SQLAlchemy models.
+ """
+ import unittest
++import tempfile
++from pathlib import Path
+ from types import SimpleNamespace
+ from unittest.mock import patch
+ from datetime import datetime
+@@ -39,6 +41,10 @@ class FakeWriteQueue:
+ 
+ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
+     def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.format_path = Path(self.temp.name) / "synthetic.epub"
++        self.format_path.write_bytes(b"synthetic book bytes".ljust(32, b" "))
+         self.engine = create_engine("sqlite:///:memory:")
+         models.Base.metadata.create_all(self.engine, tables=[
+             models.User.__table__, models.Library.__table__,
+@@ -102,7 +108,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
+             lib = cls.return_value
+             recovery_cls.return_value = lib
+             lib.list_books.return_value = [self.sample]
+-            lib.get_format_file_path.return_value = "/fake/shared/author/title.epub"
++            lib.get_format_file_path.return_value = str(self.format_path)
++            lib.get_formats.return_value = [{"format": "EPUB", "size": 32}]
+             lib.find_book_by_private_move_token.return_value = 303
+             lib.get_book.side_effect = lambda _id: None if self.queue.source_deleted else self.sample
+             result = await copy_book_to_library(
+@@ -201,6 +208,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
+             patch("app.services.private_move_recovery.CalibreLibrary") as cls,
+         ):
+             cls.return_value.get_book.return_value = self.sample
++            cls.return_value.get_formats.return_value = [{"format": "EPUB", "size": 32}]
++            cls.return_value.get_format_file_path.return_value = str(self.format_path)
+             cls.return_value.find_book_by_private_move_token.return_value = 303
+             result = await reconcile(self.db, move, self.queue)
+         self.assertEqual(result["state"], "rolled_back")
+@@ -223,6 +232,10 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
+             cls.return_value.get_book.return_value = None
+             cls.return_value.find_book_by_private_move_token.return_value = 303
+             result = await reconcile(self.db, move, self.queue)
++            # Repeating recovery must not turn the review state into proof
++            # that this incomplete copy had once reached the ready checkpoint.
++            repeated = await reconcile(self.db, move, self.queue)
++            self.assertEqual(repeated["state"], "needs_review")
+         self.assertEqual(result["state"], "needs_review")
+         self.assertEqual(result["failure_code"], "source_missing_before_copy_ready")
+         self.assertFalse(self.queue.calls)
+diff --git a/backend/tests/test_private_move_integrity.py b/backend/tests/test_private_move_integrity.py
+new file mode 100644
+index 0000000..e13d59d
+--- /dev/null
++++ b/backend/tests/test_private_move_integrity.py
+@@ -0,0 +1,53 @@
++"""Recovery must preserve a valid copy when only the source row survived."""
++import tempfile
++import unittest
++from pathlib import Path
++
++from app.calibre.library import CalibreLibrary
++from app.services.private_move_recovery import source_safe_for_rollback
++
++
++class PrivateMoveIntegrityTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        root = Path(self.temp.name)
++        self.source = CalibreLibrary(str(root / "source"), crea=True)
++        self.target = CalibreLibrary(str(root / "target"), crea=True)
++        self.ids = []
++        self.files = []
++        for lib in (self.source, self.target):
++            book_id = lib.insert_book("Synthetic", "Test Author")
++            lib.update_book(book_id, {"path": "Test Author/Synthetic"})
++            directory = Path(lib.path) / "Test Author/Synthetic"
++            directory.mkdir(parents=True)
++            path = directory / "synthetic.epub"
++            path.write_bytes(b"the only valid synthetic copy")
++            # Deliberately stale size: EPUB metadata rewrites can change bytes
++            # without refreshing data.uncompressed_size. Hash equality matters.
++            lib.add_format(book_id, "EPUB", 1, "synthetic")
++            self.ids.append(book_id)
++            self.files.append(path)
++
++    def safe(self):
++        return source_safe_for_rollback(self.source, self.ids[0], self.target, self.ids[1])
++
++    def test_identical_real_files_allow_rollback_despite_stale_catalog_sizes(self):
++        self.assertTrue(self.safe())
++
++    def test_missing_source_is_not_proved_by_its_surviving_catalog_row(self):
++        self.files[0].unlink()
++        self.assertIsNotNone(self.source.get_book(self.ids[0]))
++        self.assertFalse(self.safe())
++
++    def test_truncated_source_requires_review(self):
++        self.files[0].write_bytes(b"truncated")
++        self.assertFalse(self.safe())
++
++    def test_same_size_corruption_requires_review(self):
++        self.files[0].write_bytes(b"x" * self.files[0].stat().st_size)
++        self.assertFalse(self.safe())
++
++    def test_missing_target_cannot_be_used_as_integrity_evidence(self):
++        self.files[1].unlink()
++        self.assertFalse(self.safe())
+-- 
+2.55.0
+

@@ -1,0 +1,18 @@
+# Reference only. Tests generate random passwords and signing keys in memory,
+# allocate loopback ports, and place SQLite/Calibre files in pytest temp dirs.
+# Never point these values at an existing library or production database.
+DATA_DIR=/absolute/path/to/disposable/data
+DATABASE_URL=sqlite:////absolute/path/to/disposable/app.db
+ADMIN_USERNAME=founder
+# ADMIN_PASSWORD and SECRET_KEY: generate at launch, never commit.
+KOLIBRE_BACKEND_URL=http://127.0.0.1:18081
+KOLIBRE_MCP_BIND=127.0.0.1
+KOLIBRE_MCP_PORT=18082
+# OIDC tests generate these values and a local certificate per run:
+# KOLIBRE_OIDC_ISSUER=https://127.0.0.1:<provider-port>
+# KOLIBRE_OIDC_AUDIENCE=https://127.0.0.1:<bridge-port>/mcp
+# KOLIBRE_OIDC_JWKS_URI=https://127.0.0.1:<provider-port>/jwks
+# KOLIBRE_OIDC_CA_BUNDLE=/temporary/path/ca.pem
+# KOLIBRE_MCP_OIDC_ISSUER=https://127.0.0.1:<provider-port>
+# KOLIBRE_MCP_PUBLIC_URL=https://127.0.0.1:<bridge-port>
+# KOLIBRE_MCP_OIDC_SCOPES=openid books:read
