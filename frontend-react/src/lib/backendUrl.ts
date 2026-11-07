@@ -21,9 +21,9 @@ const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '8081'
 // il backend direttamente. In dev, invece, il proxy di vite.config.ts si
 // occupa di '/api'/'/token' e questa costante resta stringa vuota (relativa),
 // stesso principio già usato da frontend/vite.config.js.
-export const baseUrl = import.meta.env.DEV
+export const baseUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV
   ? ''
-  : `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`
+  : `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`)
 
 // Le rotte che servono IMMAGINI e font, e che dal 01/10/2026 vogliono un
 // token. Un `<img src>` non puo' allegare un header `Authorization`, e lo

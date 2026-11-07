@@ -114,7 +114,7 @@ export async function openBookInReader(
     if (opts?.notaId != null) params.set('notaId', String(opts.notaId))
   }
   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
-  win!.location.href = `/${entry}?${params.toString()}`
+  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
   return true
 }
 
@@ -137,7 +137,7 @@ export async function openBookFormatInReader(book: ReadableBook, library: string
     token: token || '',
   })
   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
-  win!.location.href = `/${entry}?${params.toString()}`
+  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
   return true
 }
 
@@ -156,6 +156,6 @@ export async function openIngestBookInReader(staging: { id: number; title: strin
     token: token || '',
   })
   const entry = format === 'EPUB' ? 'reader.html' : 'pdf-reader.html'
-  win!.location.href = `/${entry}?${params.toString()}`
+  win!.location.href = `${import.meta.env.BASE_URL}${entry}?${params.toString()}`
   return true
 }

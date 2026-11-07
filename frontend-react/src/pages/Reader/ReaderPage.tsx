@@ -1206,7 +1206,7 @@ export function ReaderPage() {
       window.history.back()
       return
     }
-    window.location.href = '/'
+    window.location.href = import.meta.env.BASE_URL
   }
 
   function zonaClick(lato: 'sinistra' | 'destra') {
