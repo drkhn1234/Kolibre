@@ -1,0 +1,81 @@
+From 12ecf368644609156d4f16ba9e43663284b79153 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 00:45:24 +0300
+Subject: [PATCH] fix(bridge): advertise configured OIDC scopes for client
+ registration
+
+---
+ docs/kolibre-multiuser-mcp.md            |  8 ++++++++
+ src/calibre_mcp/kolibre_bridge/server.py |  4 ++++
+ tests/unit/test_kolibre_bridge.py        | 14 ++++++++++++++
+ 3 files changed, 26 insertions(+)
+
+diff --git a/docs/kolibre-multiuser-mcp.md b/docs/kolibre-multiuser-mcp.md
+index d1700a0..1e57d0b 100644
+--- a/docs/kolibre-multiuser-mcp.md
++++ b/docs/kolibre-multiuser-mcp.md
+@@ -72,6 +72,7 @@ external OIDC authorization server that supports **Dynamic Client Registration
+ ```env
+ KOLIBRE_MCP_OIDC_ISSUER=https://login.example.test/realms/books
+ KOLIBRE_MCP_PUBLIC_URL=https://mcp.books.example.test
++KOLIBRE_MCP_OIDC_SCOPES=openid books:read
+ ```
+ 
+ With both variables set, FastMCP uses `RemoteAuthProvider` to advertise
+@@ -94,6 +95,13 @@ through the native-login/password-confirmed OIDC linking endpoint. Founder
+ accounts cannot change someone else's binding through application APIs.
+ 
+ `KOLIBRE_MCP_PUBLIC_URL` is the externally advertised **HTTPS** origin. The
++origin must exclude the `/mcp` path, which FastMCP appends itself.
++`KOLIBRE_MCP_OIDC_SCOPES` is a space-separated list of scopes to advertise
++to MCP OAuth clients (default: `openid`). Configure these consistently with
++the provider's client-registration and resource scope policies. These scopes
++guide OAuth requests; Kolibre's verified identity and live ACLs remain the
++authorization boundary.
++The
+ process itself still listens only on loopback; a separately secured TLS proxy
+ would be required for remote MCP clients. **Do not enable this remotely with
+ personal data yet.** OAuth discovery and real end-to-end MCP client login
+diff --git a/src/calibre_mcp/kolibre_bridge/server.py b/src/calibre_mcp/kolibre_bridge/server.py
+index a807e00..14e4f39 100644
+--- a/src/calibre_mcp/kolibre_bridge/server.py
++++ b/src/calibre_mcp/kolibre_bridge/server.py
+@@ -73,6 +73,10 @@ def _oauth_provider(client: KolibreClient) -> TokenVerifier | RemoteAuthProvider
+         token_verifier=verifier,
+         authorization_servers=[AnyHttpUrl(issuer)],
+         base_url=base_url,
++        # Empty metadata scopes cause MCP clients to register with scope="",
++        # which standards-compliant providers reject. These are requested
++        # OAuth scopes; Kolibre still enforces identity and library permissions.
++        scopes_supported=os.environ.get("KOLIBRE_MCP_OIDC_SCOPES", "openid").split(),
+     )
+ 
+ 
+diff --git a/tests/unit/test_kolibre_bridge.py b/tests/unit/test_kolibre_bridge.py
+index 91158ca..8c0e42d 100644
+--- a/tests/unit/test_kolibre_bridge.py
++++ b/tests/unit/test_kolibre_bridge.py
+@@ -231,6 +231,20 @@ def test_remote_oidc_configuration_rejects_missing_or_insecure_urls(fake_upstrea
+         create_bridge(client)
+ 
+ 
++@pytest.mark.asyncio
++async def test_oidc_metadata_advertises_configured_scopes(fake_upstream, monkeypatch):
++    client, _, _ = fake_upstream
++    monkeypatch.setenv("KOLIBRE_MCP_OIDC_ISSUER", "https://login.example.test")
++    monkeypatch.setenv("KOLIBRE_MCP_PUBLIC_URL", "https://mcp.example.test")
++    monkeypatch.setenv("KOLIBRE_MCP_OIDC_SCOPES", "openid books:read")
++    app = create_bridge(client).http_app(path="/mcp")
++    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test") as http:
++        response = await http.get("/.well-known/oauth-protected-resource/mcp")
++    assert response.status_code == 200
++    assert response.json()["resource"] == "https://mcp.example.test/mcp"
++    assert response.json()["scopes_supported"] == ["openid", "books:read"]
++
++
+ @pytest.mark.asyncio
+ async def test_only_four_read_only_tools_are_registered(fake_upstream):
+     client, _, _ = fake_upstream
+-- 
+2.55.0
+

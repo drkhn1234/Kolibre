@@ -1,0 +1,2 @@
+PASS: genuinely HTTP-issued native tokens expired at API/MCP and existing Inspector sessions for both users; password reauthentication/reconnection preserved private notes. Native refresh grants are unsupported; login issues a new token.
+Restored staging native TTL=15 minutes

@@ -1,0 +1,10 @@
+{
+  "integration_lab_git_commit": "08c50f0b922711955b5a0ddb28a82d36c5590887",
+  "deployment_helpers_sha256": {
+    "upgrade_sources.py": "5b08202d5259acf8843038fac3a7d2927512d6d7c7ce4a4b2a60ff002287a103",
+    "configure_chatgpt.py": "2d1226df6f0f839d785851ff59ae0935a64539a16152234b6547d01c380c8f1a",
+    "keycloak_config.py": "68fa0d86c04cf327312000c4c91a70cab360533a59c3997c86beb08dcc8a8274",
+    "prune_probe_clients.py": "ce65921d42e0e15ca31a07f9792b8ff81d35addf676bbc496f1225e13e791e85",
+    "update_test_ip.py": "6408139e50a1b954bda103bed6024d7832238023442a14a0293c0cc641169259"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "kolibre-stage": {
+    "git_commit": "c06a7cea001c853a9dfc74bd1e6e8ce627307e26",
+    "verified_file_count": 421,
+    "release": "/opt/kolibre-stage/releases/c06a7cea001c853a9dfc74bd1e6e8ce627307e26"
+  },
+  "kolibre-mcp-stage": {
+    "git_commit": "072c06541585dc494ad137faf84603f8d6617194",
+    "verified_file_count": 978,
+    "release": "/opt/kolibre-mcp-stage/releases/072c06541585dc494ad137faf84603f8d6617194"
+  }
+}

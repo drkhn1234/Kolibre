@@ -1,0 +1,79 @@
+From de70f7fe3e9444f5598383aa1d16d4468fc941e1 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 00:45:24 +0300
+Subject: [PATCH] fix(oidc): require token audience and support scoped JWKS
+ trust
+
+---
+ .env.example                             | 8 ++++++++
+ backend/app/services/oidc_identity.py    | 4 +++-
+ backend/tests/test_oidc_user_identity.py | 8 ++++++++
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/.env.example b/.env.example
+index 57cde97..c4a3dc6 100644
+--- a/.env.example
++++ b/.env.example
+@@ -52,3 +52,11 @@ ADMIN_PASSWORD=changeme
+ # Set it to the release you are running, so that the interface and
+ # GET /api/kolibre/version can tell you what is actually deployed.
+ KOLIBRE_VERSION=1.0.0
++
++# Optional OIDC access-token verification. All three URLs/values are required.
++#KOLIBRE_OIDC_ISSUER=https://login.example.test
++#KOLIBRE_OIDC_AUDIENCE=https://mcp.example.test/mcp
++#KOLIBRE_OIDC_JWKS_URI=https://login.example.test/jwks
++# Optional PEM CA bundle for the JWKS HTTPS connection only. Verification
++# stays enabled; omitted uses system trust. Never put private keys here.
++#KOLIBRE_OIDC_CA_BUNDLE=/absolute/path/to/development-ca.pem
+diff --git a/backend/app/services/oidc_identity.py b/backend/app/services/oidc_identity.py
+index 0276ff8..392c827 100644
+--- a/backend/app/services/oidc_identity.py
++++ b/backend/app/services/oidc_identity.py
+@@ -7,6 +7,7 @@ Kolibre user; no matching by username, email, display name or admin role.
+ from __future__ import annotations
+ 
+ import os
++import ssl
+ from urllib.parse import urlsplit
+ 
+ import httpx
+@@ -50,6 +51,7 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
+             timeout=httpx.Timeout(4.0, connect=2.0),
+             follow_redirects=False,
+             trust_env=False,
++            verify=ssl.create_default_context(cafile=os.environ.get("KOLIBRE_OIDC_CA_BUNDLE") or None),
+         ) as client:
+             response = client.get(jwks_uri)
+             response.raise_for_status()
+@@ -72,7 +74,7 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
+             algorithms=["RS256"],
+             issuer=issuer,
+             audience=audience,
+-            options={"require_exp": True},
++            options={"require_exp": True, "require_aud": True, "require_iss": True},
+         )
+         sub = claims.get("sub")
+         if not isinstance(sub, str) or not sub or len(sub) > 512:
+diff --git a/backend/tests/test_oidc_user_identity.py b/backend/tests/test_oidc_user_identity.py
+index 55031d1..2bdf966 100644
+--- a/backend/tests/test_oidc_user_identity.py
++++ b/backend/tests/test_oidc_user_identity.py
+@@ -123,6 +123,14 @@ class OIDCUserIdentityTests(unittest.TestCase):
+         with self.assertRaises(HTTPException):
+             auth._decode_token(f"{h}.{p2}.{sig}", self.db)
+ 
++    def test_access_token_requires_explicit_audience(self):
++        claims = jwt.get_unverified_claims(self.signed())
++        del claims["aud"]
++        token = jwt.encode(claims, self.pem, algorithm="RS256", headers={"kid": "key-1"})
++        with self.assertRaises(HTTPException) as ctx:
++            auth._decode_token(token, self.db)
++        self.assertEqual(ctx.exception.status_code, 401)
++
+     def test_oidc_is_disabled_without_required_server_configuration(self):
+         with patch.dict(os.environ, {"KOLIBRE_OIDC_ISSUER": ""}):
+             with self.assertRaises(HTTPException):
+-- 
+2.55.0
+

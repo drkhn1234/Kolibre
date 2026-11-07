@@ -2,11 +2,14 @@ import os
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, SecretStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import config, models, schemas, database, auth
 from ..logging_utils import log_message
 from ..services import permessi
+from ..services.oidc_identity import OIDCIdentityError, verify_oidc_claims
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -32,6 +35,77 @@ def _find_photo_file(user_id: int):
 @router.get("/me", response_model=schemas.UserResponse)
 def get_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
+
+
+class OIDCLinkRequest(BaseModel):
+    password: SecretStr
+    oidc_access_token: SecretStr
+
+
+class NativePasswordRequest(BaseModel):
+    password: SecretStr
+
+
+@router.get("/me/oidc-status")
+def my_oidc_link_status(
+    current_user: models.User = Depends(auth.get_current_native_user),
+):
+    """Report only own binding; no admin-wide identity management endpoint."""
+    return {"linked": bool(current_user.oidc_issuer and current_user.oidc_subject),
+            "issuer": current_user.oidc_issuer}
+
+
+@router.post("/me/oidc-link")
+def link_my_oidc_account(
+    payload: OIDCLinkRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_native_user),
+):
+    """Link a verified external identity to the current, reauthenticated owner.
+
+    Possession of an OIDC token alone does not select a Kolibre account.
+    Founder/admin roles never permit linking somebody else's account.
+    """
+    if not auth.verify_password(payload.password.get_secret_value(), current_user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    try:
+        issuer, subject = verify_oidc_claims(payload.oidc_access_token.get_secret_value())
+    except OIDCIdentityError as exc:
+        raise HTTPException(status_code=401, detail="Invalid OIDC access token") from exc
+
+    linked = db.query(models.User).filter(
+        models.User.oidc_issuer == issuer,
+        models.User.oidc_subject == subject,
+    ).first()
+    if linked is not None and linked.id != current_user.id:
+        raise HTTPException(status_code=409, detail="OIDC identity already linked")
+    if current_user.oidc_subject and (
+        current_user.oidc_subject != subject or current_user.oidc_issuer != issuer
+    ):
+        raise HTTPException(status_code=409, detail="Unlink the old identity first")
+    current_user.oidc_issuer = issuer
+    current_user.oidc_subject = subject
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="OIDC identity already linked") from exc
+    return {"linked": True, "issuer": issuer}
+
+
+@router.post("/me/oidc-unlink")
+def unlink_my_oidc_account(
+    payload: NativePasswordRequest,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_native_user),
+):
+    if not auth.verify_password(payload.password.get_secret_value(), current_user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    current_user.oidc_issuer = None
+    current_user.oidc_subject = None
+    db.commit()
+    return {"linked": False}
+
 
 
 @router.put("/me", response_model=schemas.UserResponse)

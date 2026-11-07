@@ -1,0 +1,17 @@
+[Unit]
+Description=Dedicated persistent Keycloak and PostgreSQL for Kolibre staging
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/kolibre-stage/deployment
+ExecStart=/usr/bin/docker compose -f compose.yml up -d
+ExecStop=/usr/bin/docker compose -f compose.yml stop
+TimeoutStartSec=240
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

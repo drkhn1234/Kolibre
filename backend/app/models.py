@@ -5,6 +5,9 @@ from .database import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
@@ -12,6 +15,10 @@ class User(Base):
     fullname = Column(String, nullable=True)
     photo_url = Column(String, nullable=True)
     is_admin = Column(Boolean, default=False)
+    # Linked external identity, never inferred from unverified email/username.
+    # Two nullable columns preserve existing local-only users.
+    oidc_issuer = Column(String, nullable=True)
+    oidc_subject = Column(String, nullable=True)
     # ── Permessi legati all'ACCOUNT ──────────────────────────────────────
     #
     # Distinti da quelli legati alla coppia utente-biblioteca

@@ -1,0 +1,10 @@
+.venv/
+repos/
+runtime/
+node_modules/
+__pycache__/
+.pytest_cache/
+evidence/
+data/
+# The parent Kolibre repository ignores *.md; publish this lab's reviewed docs.
+!*.md

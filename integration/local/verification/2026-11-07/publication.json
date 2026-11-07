@@ -1,0 +1,17 @@
+{
+  "captured_before_final_documentation_commit": true,
+  "checked_at": "2026-11-07T14:46:04.499827+00:00",
+  "workspace_head": "c7d145312565321cbd759e29b95209617245b2d6",
+  "kolibre_development_head": "f16521209f029229feb7dbf3697c662336daa319",
+  "kolibre_oidc_pr_head": "646f6f546d8bdce903852c7bc8ce5fba15603eb3",
+  "kolibre_foundation_pr_head": "1e12ea76f516a19882d41e5c3ee9686beba11e85",
+  "calibremcp_development_and_pr_head": "072c06541585dc494ad137faf84603f8d6617194",
+  "deployed_backend_commit": "c06a7cea001c853a9dfc74bd1e6e8ce627307e26",
+  "deployed_bridge_commit": "072c06541585dc494ad137faf84603f8d6617194",
+  "deployed_integration_helpers_commit": "08c50f0b922711955b5a0ddb28a82d36c5590887",
+  "tracked_changes_at_capture": {
+    "repos/Kolibre": "",
+    "repos/calibremcp": ""
+  },
+  "note": "All source/PR anchors pushed; final documentation publication commits may follow. No application change after verified source anchors."
+}
