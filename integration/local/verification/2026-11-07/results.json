@@ -129,7 +129,8 @@
     "evidence/deployment/keycloak-mapper-final.xml": "d9e1547dee4a43c87892366fc0ea6fa19669ff34c4d4139d0a69c93162540304",
     "evidence/deployment/final-auth-settings.json": "2a15656ac427cf37de91d76b7f7d48b36c123c65edb1bf1ce6419cb1dbdfdbe2",
     "evidence/deployment/patch-verification.log": "34183562ea02a032f0c77a83cb3b0643eb50a1a80a09637bca14f473c09b23db",
-    "evidence/deployment/advertised-scope-probe.log": "8b2eb5a59f27ab42be8255556319b8a197afc1b3460d21bac496377d78a8bac9"
+    "evidence/deployment/advertised-scope-probe.log": "8b2eb5a59f27ab42be8255556319b8a197afc1b3460d21bac496377d78a8bac9",
+    "evidence/deployment/basic-client-auth.log": "4e9ad5624d69e147b812f266dda2441008514829164116d35588f419f6363eb6"
   },
   "local_integration_note": "21-test combined run preceded offline follow-up; application code unchanged; final provider regression rerun separately",
   "final_keycloak_regression": {
@@ -147,5 +148,9 @@
     "offline_max_seconds_configured": 28800,
     "offline_idle_seconds_configured": 1800,
     "full_offline_wall_clock_limits_waited": false
-  }
+  },
+  "predefined_client_auth_methods_verified": [
+    "client_secret_post",
+    "client_secret_basic"
+  ]
 }
