@@ -1,0 +1,163 @@
+From 0481db182f5c935bcd3bf463d1bf9abee94027b4 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 00:36:51 +0300
+Subject: [PATCH 1/2] fix(auth): preserve library revocations across backend
+ restarts
+
+---
+ backend/app/main.py                        | 32 ++-----------
+ backend/app/services/legacy_permissions.py | 28 +++++++++++
+ backend/tests/test_startup_permissions.py  | 56 ++++++++++++++++++++++
+ 3 files changed, 87 insertions(+), 29 deletions(-)
+ create mode 100644 backend/app/services/legacy_permissions.py
+ create mode 100644 backend/tests/test_startup_permissions.py
+
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 1eca1a5..1ff623c 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -744,7 +744,7 @@ async def lifespan(app: FastAPI):
+         # esistevano prima che i permessi esistessero si conservano.
+         #
+         # Idempotente: gira a ogni avvio e non tocca niente che abbia gia'
+-        # un proprietario o una riga di permesso.
++        # un proprietario. Una riga di permesso mancante puo' essere una revoca.
+         if db.query(models.User).count() > 0:
+             fondatore = db.query(models.User).filter(models.User.is_founder.is_(True)).first()
+             if not fondatore:
+@@ -764,34 +764,8 @@ async def lifespan(app: FastAPI):
+                           "can_register_devices", "can_edit_authors"):
+                 setattr(fondatore, campo, True)
+ 
+-            senza_proprietario = db.query(models.Library).filter(models.Library.owner_id.is_(None)).all()
+-            for biblioteca in senza_proprietario:
+-                biblioteca.owner_id = fondatore.id
+-            if senza_proprietario:
+-                log_message(
+-                    "info", "auth",
+-                    f"{len(senza_proprietario)} biblioteche assegnate a '{fondatore.username}'.",
+-                )
+-
+-            altri = db.query(models.User).filter(models.User.id != fondatore.id).all()
+-            if altri:
+-                biblioteche = db.query(models.Library).all()
+-                esistenti = {
+-                    (p.user_id, p.library_id)
+-                    for p in db.query(models.LibraryPermission).all()
+-                }
+-                aggiunti = 0
+-                for utente in altri:
+-                    for biblioteca in biblioteche:
+-                        if (utente.id, biblioteca.id) in esistenti or biblioteca.owner_id == utente.id:
+-                            continue
+-                        db.add(models.LibraryPermission(
+-                            user_id=utente.id, library_id=biblioteca.id,
+-                            can_edit=True, can_share=False, can_manage=False,
+-                        ))
+-                        aggiunti += 1
+-                if aggiunti:
+-                    log_message("info", "auth", f"{aggiunti} permessi di biblioteca conservati dalla situazione precedente.")
++            from .services.legacy_permissions import migrate_legacy_library_permissions
++            migrate_legacy_library_permissions(db, fondatore)
+             db.commit()
+ 
+         # Rete di sicurezza per il controllo `is_admin`, che da oggi chiude
+diff --git a/backend/app/services/legacy_permissions.py b/backend/app/services/legacy_permissions.py
+new file mode 100644
+index 0000000..6ffc2b8
+--- /dev/null
++++ b/backend/app/services/legacy_permissions.py
+@@ -0,0 +1,28 @@
++"""One-time ownership migration for catalogs predating library ACLs."""
++from .. import models
++
++
++def migrate_legacy_library_permissions(db, founder):
++    # A missing grant on an owned library means no access, including after
++    # revocation. Never reconstruct such grants on startup. Only unowned,
++    # non-private catalogs demonstrably predate the ownership model.
++    legacy = db.query(models.Library).filter(
++        models.Library.owner_id.is_(None),
++        models.Library.is_private.is_(False),
++    ).all()
++    others = db.query(models.User).filter(models.User.id != founder.id).all()
++    existing = {
++        (row.user_id, row.library_id)
++        for row in db.query(models.LibraryPermission).all()
++    }
++    for library in legacy:
++        library.owner_id = founder.id
++        for user in others:
++            if (user.id, library.id) not in existing:
++                db.add(models.LibraryPermission(
++                    user_id=user.id, library_id=library.id,
++                    can_edit=True, can_share=False, can_manage=False,
++                ))
++    # Caller commits ownership and grants together: restart cannot replay
++    # the migration after a later revocation. Ownerless private catalogs
++    # remain inaccessible, rather than being assigned to the founder.
+diff --git a/backend/tests/test_startup_permissions.py b/backend/tests/test_startup_permissions.py
+new file mode 100644
+index 0000000..b53e01e
+--- /dev/null
++++ b/backend/tests/test_startup_permissions.py
+@@ -0,0 +1,56 @@
++"""Restart must not manufacture grants or claim ownerless private data."""
++import unittest
++
++from sqlalchemy import create_engine
++from sqlalchemy.orm import Session
++
++from app import models
++from app.services.legacy_permissions import migrate_legacy_library_permissions
++
++
++class StartupPermissionTests(unittest.TestCase):
++    def setUp(self):
++        self.engine = create_engine("sqlite:///:memory:")
++        models.Base.metadata.create_all(self.engine)
++        self.db = Session(self.engine)
++        self.founder = models.User(username="founder", hashed_password="unused", is_founder=True)
++        self.sister = models.User(username="sister", hashed_password="unused")
++        self.db.add_all([self.founder, self.sister])
++        self.db.flush()
++
++    def tearDown(self):
++        self.db.close()
++        self.engine.dispose()
++
++    def library(self, name, **kwargs):
++        row = models.Library(name=name, folder_name=name, path="/unused/" + name, **kwargs)
++        self.db.add(row)
++        self.db.commit()
++        return row
++
++    def migrate(self):
++        migrate_legacy_library_permissions(self.db, self.founder)
++        self.db.commit()
++
++    def test_owned_library_without_grant_stays_inaccessible(self):
++        self.library("shared", owner_id=self.founder.id)
++        self.migrate()
++        self.assertEqual(self.db.query(models.LibraryPermission).count(), 0)
++
++    def test_legacy_grant_migrates_once_and_revocation_survives(self):
++        library = self.library("legacy")
++        self.migrate()
++        self.assertEqual(library.owner_id, self.founder.id)
++        grant = self.db.query(models.LibraryPermission).one()
++        self.assertEqual(grant.user_id, self.sister.id)
++        self.assertTrue(grant.can_edit)
++        self.db.delete(grant)
++        self.db.commit()
++        self.migrate()
++        self.assertEqual(self.db.query(models.LibraryPermission).count(), 0)
++
++    def test_ownerless_private_catalog_is_never_claimed_or_shared(self):
++        library = self.library("private_orphan", is_private=True)
++        self.migrate()
++        self.assertIsNone(library.owner_id)
++        self.assertEqual(self.db.query(models.LibraryPermission).count(), 0)
+-- 
+2.55.0
+
