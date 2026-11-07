@@ -1,0 +1,16 @@
+{
+  "installed_flatpak": "rocks.koreader.KOReader",
+  "actual_runtime_and_plugin": true,
+  "isolated_profile": true,
+  "scripted_headless": true,
+  "device_id": 3,
+  "synthetic_shared_book_id": 4,
+  "epub_download": "passed",
+  "epub_engine_load": "passed",
+  "annotation_and_note_upload": "passed",
+  "progress_upload": 0.37,
+  "progress_pull": 0.62,
+  "sister_annotation_isolation": "passed",
+  "normal_user_profile_modified": false,
+  "vocabulary_statistics_backup_restore": "not tested"
+}

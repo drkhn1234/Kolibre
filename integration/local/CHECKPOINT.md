@@ -1,3 +1,5 @@
+> KOReader follow-up: actual installed Flatpak core sync passed in an isolated profile: EPUB download/load, synthetic highlight/note upload,37% push,62% web-to-KOReader pull and sister-note isolation. See KOREADER_RESULTS.md. Normal KOReader profile unchanged/unconfigured; no app redeployment. New dedicated test device3/shared book4 remain.
+
 > Latest deployment: use FIRST_USE.md. Vectors migrated to CalibreMCP's LanceDB
 > store; web interface live https://books.drkhn.site/kolibre-stage/ . Backend
 > d03ec0416fa6cd93ea8f2dda09f45e263c1e712f, bridge
