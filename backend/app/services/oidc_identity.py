@@ -79,6 +79,12 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub or len(sub) > 512:
             raise OIDCIdentityError("Invalid OIDC subject")
+        # Identity and audience alone do not grant delegated book access.
+        # Enforce the application scope only after signature verification;
+        # native Kolibre logins keep their existing authorization path.
+        scope = claims.get("scope")
+        if not isinstance(scope, str) or "books:read" not in scope.split():
+            raise OIDCIdentityError("OIDC token requires books:read scope")
     except (JWTError, httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError) as exc:
         raise OIDCIdentityError("OIDC verification failed") from exc
 
