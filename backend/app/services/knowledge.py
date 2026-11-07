@@ -1,7 +1,7 @@
 """Rebuildable per-library passage indexes. No identity or ACL cache.
 
-Exact cosine scoring intentionally avoids a vector daemon/ANN prefilter contract.
-SQLite is the storage boundary; replacing the backend does not change the API.
+Vectors use CalibreMCP's embedded LanceDB store. SQLite holds lexical text and
+source generations only; Kolibre remains the authorization boundary.
 """
 
 import hashlib
@@ -23,7 +23,7 @@ from .. import config, database, models
 from ..calibre.library import CalibreLibrary
 
 INDEX = "knowledge.sqlite3"
-VERSION = "epub-spine-words-v1"
+VERSION = "epub-spine-words-lance-v2"
 
 
 class Text(HTMLParser):
@@ -176,6 +176,21 @@ def connect(path):
     return db
 
 
+def vector_store(path, engine):
+    from calibre_mcp.rag.lancedb_vector_store import LanceVectorStore
+
+    return LanceVectorStore(
+        os.path.join(path, "lancedb_knowledge"),
+        embedding_model_name=None,
+        table_name="passages_"
+        + hashlib.sha256(engine.identity.encode()).hexdigest()[:16],
+    )
+
+
+def passage_id(book, section, start):
+    return hashlib.sha256(json.dumps([book, section, start]).encode()).hexdigest()
+
+
 def sync_library(path, engine):
     """Worker-only, atomic per-book replacement. Failure retains old rows,
     which retrieval suppresses by fingerprint/model; originals are never edited.
@@ -184,6 +199,7 @@ def sync_library(path, engine):
         return
     lib = CalibreLibrary(path)
     books = lib.list_books()
+    store = vector_store(path, engine)
     with connect(path) as db:
         existing = {r["book"]: r for r in db.execute("SELECT * FROM sources")}
         live = set()
@@ -203,6 +219,23 @@ def sync_library(path, engine):
                 vectors.extend(engine.encode([c["text"] for c in chunks[i : i + 32]]))
             if fingerprint(source) != digest:
                 continue
+            store.replace_book_vectors(
+                bid,
+                [
+                    {
+                        "id": passage_id(bid, c["section"], c["word_start"]),
+                        "vector": v,
+                        "content": c["text"],
+                        "metadata": {
+                            "book_id": bid,
+                            "digest": digest,
+                            "section": c["section"],
+                            "word_start": c["word_start"],
+                        },
+                    }
+                    for c, v in zip(chunks, vectors, strict=True)
+                ],
+            )
             with db:
                 ids = [
                     r[0]
@@ -218,7 +251,7 @@ def sync_library(path, engine):
                             chunk["section"],
                             chunk["word_start"],
                             chunk["text"],
-                            json.dumps(vector),
+                            "[]",
                         ),
                     )
                     db.execute(
@@ -231,6 +264,7 @@ def sync_library(path, engine):
                 )
         with db:
             for bid in set(existing) - live:
+                store.replace_book_vectors(bid, [])
                 db.execute(
                     "DELETE FROM lexical WHERE rowid IN (SELECT id FROM passages WHERE book=?)",
                     (bid,),
@@ -274,24 +308,47 @@ def candidates(path, engine, query, vector):
             else {}
         )
         result = []
-        for row in db.execute("SELECT * FROM passages"):
-            if row["book"] not in valid:
+        if not valid:
+            return result, len(books)
+        store = vector_store(path, engine)
+        conditions = " OR ".join(
+            f"(metadata.book_id = {int(bid)} AND metadata.digest = '{digest}')"
+            for bid, digest in valid.items()
+        )
+        rows = store.search_vector(vector, where=conditions, limit=100)
+        # Include exact lexical hits independently of semantic top-k.
+        lookup = {
+            passage_id(r["book"], r["section"], r["word_start"]): r["id"]
+            for r in db.execute("SELECT id,book,section,word_start FROM passages")
+            if r["book"] in valid
+        }
+        lex_ids = [pid for pid, rid in lookup.items() if rid in lexical][:100]
+        if lex_ids:
+            literals = ",".join("'" + pid + "'" for pid in lex_ids)
+            rows += store.search_vector(
+                vector, where=f"({conditions}) AND id IN ({literals})", limit=100
+            )
+        seen = set()
+        for row in rows:
+            if row["id"] in seen:
                 continue
-            stored = json.loads(row["vector"])
-            if len(stored) != len(vector):
+            seen.add(row["id"])
+            meta = row["metadata"]
+            bid = meta["book_id"]
+            if bid not in valid or meta["digest"] != valid[bid]:
                 continue
             result.append(
                 {
-                    "book_id": row["book"],
-                    "title": books[row["book"]]["title"],
-                    "author": books[row["book"]]["author"],
-                    "section": row["section"],
-                    "word_start": row["word_start"],
-                    "text": row["text"],
-                    "source_sha256": valid[row["book"]],
+                    "book_id": bid,
+                    "title": books[bid]["title"],
+                    "author": books[bid]["author"],
+                    "section": meta["section"],
+                    "word_start": meta["word_start"],
+                    "text": row["content"],
+                    "source_sha256": valid[bid],
                     "kind": "passage",
-                    "_cosine": sum(a * b for a, b in zip(stored, vector)),
-                    "_lexical": lexical.get(row["id"]),
+                    "_cosine": 1 - float(row["_distance"]),
+                    "_lexical": lexical.get(lookup.get(row["id"])),
                 }
             )
         return result, len(books) - len(valid)

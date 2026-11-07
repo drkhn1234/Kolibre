@@ -1,2 +1,4 @@
 # Optional CPU embedding worker/API dependencies, separate from the baseline.
 fastembed==0.9.1
+lancedb==0.41.0
+# Install the tested CalibreMCP revision with --no-deps for its LanceVectorStore.
