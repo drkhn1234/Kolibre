@@ -1,3 +1,5 @@
+> Update: actual user-executed ChatGPT results are recorded in [CHATGPT_ACCEPTANCE.md](CHATGPT_ACCEPTANCE.md). The following original setup guide predates those results.
+
 # Connect Kolibre staging to ChatGPT
 
 Server-side protocol preparation is verified. **A connection inside an actual

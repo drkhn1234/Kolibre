@@ -1,3 +1,5 @@
+> New knowledge-retrieval milestone: see [KNOWLEDGE.md](KNOWLEDGE.md) for current sources, fifth-tool staging tests and limitations; [CHATGPT_ACCEPTANCE.md](CHATGPT_ACCEPTANCE.md) records the actual four-tool ChatGPT acceptance. Earlier results below remain historical.
+
 # Oracle staging execution log
 
 Current milestone: explicitly authorized VPS access, administration and deployment, starting 2026-11-07. The former checkpoint-only and no-VPS stop conditions are superseded. No paid OCI resource provisioning or draft PR merges.

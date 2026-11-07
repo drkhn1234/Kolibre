@@ -1,7 +1,5 @@
-# Published integration snapshot
+# Integration lab snapshot
 
-Lab export: `55e94e2e6841c0249ca419583d6682a688512384`.
-Deployed helper source: `08c50f0b922711955b5a0ddb28a82d36c5590887`.
-Deployed application sources: Kolibre c06a7ce; CalibreMCP 072c065.
-Reviewed harness, documentation and credential-free verification only.
-Read CHECKPOINT.md and CHATGPT.md; runtime secrets/keys/databases are excluded.
+Source lab revision: b1604941b540ec1edd9025f98164d29aa6726ece
+
+See KNOWLEDGE.md and CHECKPOINT.md. Runtime secrets/databases/raw logs excluded.

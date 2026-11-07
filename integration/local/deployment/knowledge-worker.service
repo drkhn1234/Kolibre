@@ -1,0 +1,22 @@
+[Unit]
+Description=Kolibre derived passage indexing (staging)
+After=kolibre-stage.service
+[Service]
+User=kolibre-stage
+Group=kolibre-stage
+WorkingDirectory=/opt/kolibre-stage/current
+EnvironmentFile=/etc/kolibre-stage/backend.env
+ExecStart=/opt/kolibre-stage/current/.venv/bin/python -m backend.app.services.knowledge
+Restart=on-failure
+RestartSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kolibre-stage
+MemoryMax=768M
+CPUQuota=50%
+Nice=10
+[Install]
+WantedBy=multi-user.target

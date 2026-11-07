@@ -17,8 +17,24 @@ Siyuan; commit/push development and draft PR branches; no PR merges.
       audience during offline refresh; real basic/offline privacy/revocation pass.
 - [x] Update the stacked draft PRs without merging or rewriting existing history.
 - [x] Reconcile documentation and final environment/checkpoint evidence.
-- [ ] Account-side ChatGPT connection and model tool selection: requires the
+- [x] Account-side ChatGPT connection and model tool selection: requires the
       user's authenticated ChatGPT interface; not implied by protocol tests.
 
 This file is updated at milestone completion; raw evidence is under
 `evidence/deployment/`, which is deliberately ignored by Git.
+
+
+# Knowledge retrieval milestone
+
+- [x] Record user-executed ChatGPT results separately; preserve baseline Git tags.
+- [x] Fresh encrypted backup; isolated decrypt/SQLite integrity/content check.
+- [x] Implement authorized EPUB passages, model providers, hybrid ranking,
+      citations, own annotations and periodic crash-safe indexing.
+- [x] Focused local lifecycle/private-move tests and default four-tool regression.
+- [x] Deploy bounded worker and optional fifth tool; preserve original services.
+- [x] Actual HTTPS native/OIDC MCP concurrent privacy/revocation/reconnect tests.
+- [x] Public conceptual-query smoke using two synthetic shared example books.
+- [ ] User-executed ChatGPT fifth-tool citation/quality acceptance.
+- [ ] Full isolated PostgreSQL/clean-host restore; hosted embeddings live tests.
+
+See KNOWLEDGE.md for explicit simplifications, resource limits and deferred work.

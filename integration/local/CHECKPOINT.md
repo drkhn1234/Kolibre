@@ -1,10 +1,30 @@
+> Current milestone update — knowledge retrieval deployed (2026-11-07).
+> Read [KNOWLEDGE.md](KNOWLEDGE.md) first for architecture, tests, configuration,
+> exact deployed revisions and rollback. The older milestone sections below
+> remain historical where they describe four tools or pre-feature sources.
+> Backend now bbb24204e6ebb2b104cac3da5c9075ba65831dad; bridge
+> 6877e76160dafc25b236ba2200855a3f7576442c. Optional fifth tool is enabled on
+> Oracle; default four-tool configuration still passes its regression.
+> User-executed actual ChatGPT acceptance is in CHATGPT_ACCEPTANCE.md.
+> Sister shared grant is restored. Five-tool HTTPS MCP tests pass with native
+> and Keycloak authentication. Two additional synthetic shared example books
+> were imported via normal ingestion, bringing shared to three / total to five.
+> Public semantic top-1 quality smoke passes for both new conceptual queries.
+> Source indexes rebuild automatically; worker active/enabled, 50% CPU/768 MiB.
+> Baseline tags preserve the previous validated state; no draft PR merges.
+> Next functional action: refresh ChatGPT metadata and test the fifth tool's
+> passage selection/citations. Full clean-host restore, hosted embeddings and
+> real/multilingual corpus quality remain unverified. Do not repeat old suites
+> simply to recover context. Secrets remain only in ignored runtime/root config.
+
 # Kolibre–CalibreMCP checkpoint — 2026-11-07
 
 ## 1. Current objective and status
 
-The server-side ChatGPT MCP interoperability milestone is verified and ready
-for an account-side connection attempt. **ChatGPT itself has not been connected
-or observed.** The actual MCP client used was shipped Inspector 2.14.0, over
+Actual ChatGPT account-side acceptance has now been reported by the user; see
+[CHATGPT_ACCEPTANCE.md](CHATGPT_ACCEPTANCE.md) for precise evidence and limits.
+Knowledge retrieval implementation is now authorized and in progress. The prior
+server-side MCP interoperability milestone was independently verified. The actual MCP client used was shipped Inspector 2.14.0, over
 public HTTPS, with native and persistent Keycloak authentication.
 
 Read [VPS_RESULTS.md](VPS_RESULTS.md) for exact results and security limits,
@@ -13,7 +33,7 @@ Read [VPS_RESULTS.md](VPS_RESULTS.md) for exact results and security limits,
 in RESULTS.md / INTEROPERABILITY.md are historical, explicitly labelled.
 No PR was merged, production books imported, or paid resource provisioned.
 The latest user authorized Oracle administration; earlier no-VPS/paused/checkpoint-only
-instructions were superseded. This checkpoint does not authorize a new milestone.
+instructions were superseded. The user has authorized the permission-aware knowledge retrieval milestone.
 
 ## 2. Repositories and Git state
 

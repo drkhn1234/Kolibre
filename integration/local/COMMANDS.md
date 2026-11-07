@@ -181,3 +181,26 @@ code/S256 exchange and refresh/revocation using httpx.BasicAuth(client_id,
 client_secret), without client_secret in the form. The resulting bearer was
 verified at /api/users/me as founder. Output: basic-client-auth.log; PASS.
 All authentication material stayed in memory or mode-0600 runtime files.
+
+## Knowledge retrieval vertical slice — 2026-11-07
+
+- `ssh oracle 'sudo /usr/local/sbin/kolibre-stage-backup'`: new encrypted baseline.
+- Copy encrypted snapshot via root read-only SSH stream to ignored runtime;
+  age decrypt into isolated runtime/baseline-restore; SQLite integrity ok,
+  two users/three EPUBs/nonempty IdP dump/root settings. No live restore/migration.
+- `PYTHONPATH="$PWD/repos/Kolibre/backend" .venv/bin/python -m unittest discover -s repos/Kolibre/backend/tests -p 'test_*.py'`: 81 OK.
+- `.venv/bin/python -m pytest tests/test_knowledge.py -q --tb=short`: 1 passed,
+  9.55s (real embeddings, MCP/HTTP, ACL/lifecycle/private move).
+- `.venv/bin/python -m pytest tests/test_live_native.py::test_native_mcp_sessions_and_live_revocation -q`: 1 passed.
+- Existing bridge/logging pytest: 13 passed; bridge Ruff lint/format clean.
+- Git archive upload; deployment/upgrade_sources.py with exact 40-char bbb24204…
+  and 6877e761… hashes. An initial abbreviated-hash invocation correctly refused
+  without changes. Enable script initially lacked isolated HF_HOME; fixed
+  configuration without weakening ProtectHome, then deployed successfully.
+- `PYTHONPATH=. .venv/bin/python deployment/knowledge_probe.py`: actual public
+  HTTPS real FastMCP client, both native/Keycloak S256 identities, five tools,
+  concurrent retrieval, foreign denial, revoke/reconnect/restore PASS.
+- Two representative synthetic shared EPUBs imported through actual ingestion;
+  worker indexed automatically. Public semantic-only top-1 query smoke passes.
+- No old full Calibre suite repetition, paid compute, PR merges or unrelated
+  container restarts. Sources/helpers and recovery instructions: KNOWLEDGE.md.

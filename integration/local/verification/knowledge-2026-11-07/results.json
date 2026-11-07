@@ -1,0 +1,20 @@
+{
+  "backend": "bbb24204e6ebb2b104cac3da5c9075ba65831dad",
+  "bridge": "6877e76160dafc25b236ba2200855a3f7576442c",
+  "backend_tests": 81,
+  "focused_integration_tests": 1,
+  "default_four_tool_test": 1,
+  "bridge_tests": 13,
+  "public_native_and_oidc": "pass",
+  "chatgpt_fifth_tool": "not tested",
+  "hosted_embeddings": "not tested",
+  "full_host_restore": "not tested",
+  "raw_evidence_sha256": {
+    "knowledge-backend-final.log": "8e032b8eddd05610ecaa4154d737a65658479026a57c9aa6750774ce318e524e",
+    "knowledge-local-final.log": "797de3e2785133e2e6f18dd65ca331a523cba6294d36ba0f45be24da542db4ce",
+    "knowledge-four-tool-baseline.log": "e86189b088d2b308168b6aa5f083d2a21f3748f0ae47a8cf1b1a1e2f5ced621a",
+    "knowledge-bridge.log": "273b88c3dc4863d162b40666e6463339295b062140b79fcf527d010bf37ddeeb",
+    "knowledge-public.log": "9c6da853e510feb519f7d06991a5fb6ff009278bd9b41d3b3edea69e2b899025",
+    "knowledge-quality-public.log": "444178871acd06513db9ba8b45ce4f8e5b55991c65e835a0c718f973091b525f"
+  }
+}

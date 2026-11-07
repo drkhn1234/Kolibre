@@ -1,3 +1,5 @@
+> New knowledge-retrieval milestone: see [KNOWLEDGE.md](KNOWLEDGE.md) for current sources, fifth-tool staging tests and limitations; [CHATGPT_ACCEPTANCE.md](CHATGPT_ACCEPTANCE.md) records the actual four-tool ChatGPT acceptance. Earlier results below remain historical.
+
 # Local Kolibre–CalibreMCP integration lab
 
 Current milestone: persistent Oracle staging and server-side ChatGPT OAuth

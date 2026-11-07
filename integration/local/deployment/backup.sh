@@ -10,19 +10,23 @@ output="$base/daily/$stamp.tar.gz.age"
 backend_active=0
 bridge_active=0
 idp_active=0
+worker_active=0
 systemctl is-active --quiet kolibre-stage && backend_active=1
 systemctl is-active --quiet kolibre-mcp-stage && bridge_active=1
 test "$(docker inspect --format '{{.State.Running}}' kolibre-stage-idp-1)" != true || idp_active=1
+systemctl is-active --quiet kolibre-knowledge-stage && worker_active=1
 restore_services() {
     if test "$idp_active" = 1; then
         docker compose -f /opt/kolibre-stage/deployment/compose.yml start idp >/dev/null
     fi
     if test "$backend_active" = 1; then systemctl start kolibre-stage; fi
     if test "$bridge_active" = 1; then systemctl start kolibre-mcp-stage; fi
+    if test "$worker_active" = 1; then systemctl start kolibre-knowledge-stage; fi
     rm -rf -- "$work"
 }
 trap restore_services EXIT
 trap 'exit 1' HUP INT TERM
+if test "$worker_active" = 1; then systemctl stop kolibre-knowledge-stage; fi
 systemctl stop kolibre-mcp-stage kolibre-stage
 docker compose -f /opt/kolibre-stage/deployment/compose.yml stop idp >/dev/null
 python3 - <<'PY'
@@ -38,6 +42,7 @@ cp /usr/local/sbin/kolibre-stage-backup "$work/backup-script"
 install -d -m 0700 "$work/units"
 cp /etc/systemd/system/kolibre-stage.service /etc/systemd/system/kolibre-mcp-stage.service /etc/systemd/system/kolibre-stage-idp.service "$work/units/"
 cp /etc/systemd/system/kolibre-stage-backup.service /etc/systemd/system/kolibre-stage-backup.timer "$work/units/"
+if test -f /etc/systemd/system/kolibre-knowledge-stage.service; then cp /etc/systemd/system/kolibre-knowledge-stage.service "$work/units/"; fi
 cp /etc/caddy/kolibre-stage.routes "$work/routes"
 tar -czf - -C /var/lib kolibre-stage -C "$work" idp.sql settings units routes deployment backup-script |
     age -r "$(cat /etc/kolibre-stage/backup-recipient.txt)" -o "$output.partial"
