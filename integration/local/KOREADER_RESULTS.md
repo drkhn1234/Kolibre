@@ -1,3 +1,16 @@
+## Regular-profile installation follow-up
+
+Installed the server-generated preconfigured plugin in the normal Flatpak
+profile on2026-11-07. Dedicated owner-founder device4: **KOReader Flatpak — drkhn**.
+Managed books: /home/drkhn/Documents/Kolibre. Device authentication and Lua syntax
+verified; a disposable book is queued for first manual sync. Normal KOReader was
+open: its settings contents were preserved, and gconfig applies URL/token/folder
+on NEXT launch. Regular-profile first sync remains pending the user's restart.
+No test automation patches were installed in the regular profile. Existing
+plugins/history/books were retained. Profile directory0700/settings0600 protect
+credentials; backup/receipt are in ignored runtime/koreader-normal-setup.
+Earlier statements below about no plugin describe the state before installation.
+
 # KOReader Flatpak sync check — 2026-11-07
 
 **Core sync passed with the actual installed rocks.koreader.KOReader Flatpak.**

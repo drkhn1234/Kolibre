@@ -1,3 +1,11 @@
+> Regular KOReader profile now provisioned: device4 **KOReader Flatpak — drkhn**,
+> owner founder, plugin in ~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/kolibre.koplugin,
+> dedicated books ~/Documents/Kolibre. Existing active settings contents left intact;
+> gconfig activates on next KOReader launch. User should exit/reopen, then Kolibre →
+> Sync everything and accept queued disposable book. Normal-profile first sync is
+> not yet observed. Private setup backup/receipt: runtime/koreader-normal-setup/.
+> No synthetic sidecar patches installed in normal profile. See KOREADER_RESULTS.md.
+
 > KOReader follow-up: actual installed Flatpak core sync passed in an isolated profile: EPUB download/load, synthetic highlight/note upload,37% push,62% web-to-KOReader pull and sister-note isolation. See KOREADER_RESULTS.md. Normal KOReader profile unchanged/unconfigured; no app redeployment. New dedicated test device3/shared book4 remain.
 
 > Latest deployment: use FIRST_USE.md. Vectors migrated to CalibreMCP's LanceDB

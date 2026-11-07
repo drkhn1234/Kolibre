@@ -1,0 +1,17 @@
+{
+  "installed_utc": "2026-11-07T18:45:15.548955+00:00",
+  "device_id": 4,
+  "device_name": "KOReader Flatpak \u2014 drkhn",
+  "owner": "founder",
+  "plugin_directory": "/home/drkhn/.var/app/rocks.koreader.KOReader/config/koreader/plugins/kolibre.koplugin",
+  "managed_books_directory": "/home/drkhn/Documents/Kolibre",
+  "api_origin": "https://books.drkhn.site/kolibre-api-stage",
+  "activation": "next KOReader launch",
+  "active_settings_file_untouched": true,
+  "plugin_lua_files": 10,
+  "device_registered": true,
+  "provisioning_lua_syntax": "passed",
+  "device_auth_verified": true,
+  "profile_directory_mode_before": "0o755",
+  "profile_directory_mode": "0700"
+}
