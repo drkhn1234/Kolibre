@@ -1,6 +1,7 @@
 import base64
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 from typing import List
@@ -427,6 +428,10 @@ async def upload_ingest_files(
     # Ownership is attached synchronously by the HTTP request, without races.
     upload_dir = os.path.join(config.INGEST_DIR, "_web_uploads", str(current_user.id))
     os.makedirs(upload_dir, exist_ok=True)
+    # Imported staging records retain file_path after their files are moved.
+    # Reusing that path would select the old record (and its old privacy
+    # decision). Give each request a fresh namespace, preserving filenames.
+    upload_dir = tempfile.mkdtemp(prefix="upload-", dir=upload_dir)
     staged = []
     rejected = []
 

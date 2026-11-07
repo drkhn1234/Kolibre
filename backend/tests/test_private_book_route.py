@@ -4,6 +4,8 @@ Only Calibre's disk operations are mocked; authorization, private routing,
 record migration and persistence execute against real SQLAlchemy models.
 """
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime
@@ -39,6 +41,10 @@ class FakeWriteQueue:
 
 class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.format_path = Path(self.temp.name) / "synthetic.epub"
+        self.format_path.write_bytes(b"synthetic book bytes".ljust(32, b" "))
         self.engine = create_engine("sqlite:///:memory:")
         models.Base.metadata.create_all(self.engine, tables=[
             models.User.__table__, models.Library.__table__,
@@ -102,7 +108,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             lib = cls.return_value
             recovery_cls.return_value = lib
             lib.list_books.return_value = [self.sample]
-            lib.get_format_file_path.return_value = "/fake/shared/author/title.epub"
+            lib.get_format_file_path.return_value = str(self.format_path)
+            lib.get_formats.return_value = [{"format": "EPUB", "size": 32}]
             lib.find_book_by_private_move_token.return_value = 303
             lib.get_book.side_effect = lambda _id: None if self.queue.source_deleted else self.sample
             result = await copy_book_to_library(
@@ -201,6 +208,8 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.private_move_recovery.CalibreLibrary") as cls,
         ):
             cls.return_value.get_book.return_value = self.sample
+            cls.return_value.get_formats.return_value = [{"format": "EPUB", "size": 32}]
+            cls.return_value.get_format_file_path.return_value = str(self.format_path)
             cls.return_value.find_book_by_private_move_token.return_value = 303
             result = await reconcile(self.db, move, self.queue)
         self.assertEqual(result["state"], "rolled_back")
@@ -223,6 +232,10 @@ class PrivateBookRouteTests(unittest.IsolatedAsyncioTestCase):
             cls.return_value.get_book.return_value = None
             cls.return_value.find_book_by_private_move_token.return_value = 303
             result = await reconcile(self.db, move, self.queue)
+            # Repeating recovery must not turn the review state into proof
+            # that this incomplete copy had once reached the ready checkpoint.
+            repeated = await reconcile(self.db, move, self.queue)
+            self.assertEqual(repeated["state"], "needs_review")
         self.assertEqual(result["state"], "needs_review")
         self.assertEqual(result["failure_code"], "source_missing_before_copy_ready")
         self.assertFalse(self.queue.calls)
