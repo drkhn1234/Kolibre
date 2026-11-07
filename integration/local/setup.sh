@@ -16,3 +16,5 @@ uv venv --python 3.12 .venv
 uv pip sync --python .venv/bin/python requirements.lock
 uv pip install --python .venv/bin/python --no-deps -e repos/calibremcp
 npm ci --prefix oidc
+npm ci --prefix clients/inspector --no-audit --no-fund
+bash deployment/setup_local_keycloak.sh

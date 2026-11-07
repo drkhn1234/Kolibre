@@ -7,6 +7,10 @@ import { Provider, errors } from 'oidc-provider';
 const issuer = process.env.LAB_ISSUER;
 const resource = process.env.LAB_RESOURCE;
 const accounts = JSON.parse(process.env.LAB_ACCOUNTS);
+const accessTokenTTL = Number(process.env.LAB_ACCESS_TOKEN_TTL || 300);
+if (!Number.isSafeInteger(accessTokenTTL) || accessTokenTTL < 1 || accessTokenTTL > 300) {
+  throw new Error('LAB_ACCESS_TOKEN_TTL must be an integer from 1 to 300');
+}
 const provider = new Provider(issuer, {
   jwks: JSON.parse(fs.readFileSync(process.env.LAB_JWKS, 'utf8')),
   clients: [],
@@ -24,7 +28,7 @@ const provider = new Provider(issuer, {
       getResourceServerInfo: async (_ctx, requested) => {
         if (requested !== resource) throw new errors.InvalidTarget();
         return { scope: 'books:read', audience: resource, accessTokenFormat: 'jwt',
-          accessTokenTTL: 300, jwt: { sign: { alg: 'RS256' } } };
+          accessTokenTTL, jwt: { sign: { alg: 'RS256' } } };
       },
     },
   },

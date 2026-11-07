@@ -1,0 +1,32 @@
+[Unit]
+Description=Kolibre synthetic multi-user staging backend
+After=network-online.target kolibre-stage-idp.service
+Wants=network-online.target
+
+[Service]
+User=kolibre-stage
+Group=kolibre-stage
+WorkingDirectory=/opt/kolibre-stage/current
+EnvironmentFile=/etc/kolibre-stage/backend.env
+ExecStart=/opt/kolibre-stage/current/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 18081 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/kolibre-stage
+InaccessiblePaths=-/var/lib/docker -/root -/etc/ssh
+MemoryMax=1536M
+CPUQuota=80%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

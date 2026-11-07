@@ -2,15 +2,14 @@
 
 import asyncio
 import io
-import json
 import os
-from pathlib import Path
 import secrets
 import socket
 import subprocess
 import sys
 import time
 import zipfile
+from pathlib import Path
 
 import httpx
 import pytest
@@ -49,13 +48,14 @@ class Stack:
             "ADMIN_PASSWORD": self.passwords["founder"],
             "KOLIBRE_BACKEND_URL": self.url,
             "KOLIBRE_MCP_PORT": str(self.bridge_port),
+            "CALIBRE_MCP_LOG_FILE": str(directory / "bridge-structured.jsonl"),
             "PYTHONPATH": str(ROOT / "repos/Kolibre"),
         }
         self.processes = []
         self.logs = []
         self.tokens = {}
 
-    def start(self, name, args, port, executable=None):
+    def start(self, name, args, port, executable=None, startup_timeout=20):
         log = open(self.directory / f"{name}.log", "ab")
         self.logs.append(log)
         proc = subprocess.Popen(
@@ -66,7 +66,8 @@ class Stack:
             stderr=subprocess.STDOUT,
         )
         self.processes.append(proc)
-        for _ in range(200):
+        deadline = time.monotonic() + startup_timeout
+        while time.monotonic() < deadline:
             if proc.poll() is not None:
                 raise RuntimeError(f"{name} failed; inspect {log.name}")
             try:

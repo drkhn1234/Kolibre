@@ -1,0 +1,8 @@
+{
+  "oauth": "unchanged",
+  "oidc": "unchanged",
+  "unauthenticated_mcp": {
+    "status": 401,
+    "www_authenticate": "Bearer resource_metadata=\"https://books.drkhn.site/.well-known/oauth-protected-resource/kolibre-mcp-stage/mcp\""
+  }
+}

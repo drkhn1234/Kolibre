@@ -1,5 +1,12 @@
 # Completion audit
 
+This original local audit is historical. The later authorized Oracle/ChatGPT
+protocol audit is [VPS_RESULTS.md](VPS_RESULTS.md), with current state and recovery
+in [CHECKPOINT.md](CHECKPOINT.md). Its deployed/refresh results supersede earlier
+not-tested labels below; actual ChatGPT UI, semantic RAG and production security
+review still require separate acceptance.
+
+
 Each requirement is evaluated against actual execution, with limits stated explicitly. Raw test results and commands are linked from RESULTS.md and COMMANDS.md.
 
 | Specification | Evidence |

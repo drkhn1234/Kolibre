@@ -1,5 +1,31 @@
 # Local integration results — 2026-11-07
 
+Current status: persistent Oracle staging and server-side ChatGPT OAuth
+preparation are verified. See [VPS_RESULTS.md](VPS_RESULTS.md),
+[CHATGPT.md](CHATGPT.md) and [CHECKPOINT.md](CHECKPOINT.md). Final current live
+suite: **21 passed**, one warning, **495.64s**. Backend: **79 tests OK**;
+restricted bridge: **13 passed**. Full CalibreMCP: **285 passed, 42 failed,
+23 errors, 10 skipped**; identical unsuccessful IDs on the original baseline.
+Actual ChatGPT account connection remains untested. Statements below describe
+historical milestones and their limitations at that time.
+
+
+## Historical local milestone: independent MCP client interoperability
+
+**Passed:** the final combined local suite completed **18 passed, 1 existing warning in 312.40 seconds**. This includes all 15 prior live integration scenarios plus three new scenarios using the shipped **MCP Inspector 2.14.0 `mcpdo` terminal client**, run with private Node 22.23.4. Command: `.venv/bin/python -m pytest tests -v --tb=short --junitxml=evidence/client-milestone-junit.xml`; output: `evidence/client-milestone-full.log` and the matching JUnit XML.
+
+Inspector negotiated MCP **2025-11-25**, discovered exactly the four allowed tools, and made actual tool calls in simultaneous native and OIDC sessions. Both users accessed shared/own private books, lexical full text and their own notes; foreign private identifiers returned tool errors. Live revocation, stale-list requests, reconnect while revoked, genuine token expiry within existing sessions, and fresh authentication/reconnection passed. Inspector independently performed OIDC discovery, DCR, S256 PKCE, state checking, loopback callback, exchange and token persistence. Only the synthetic provider login/consent interaction was automated.
+
+Final sanitized transcripts record **94 Inspector commands**, **36 successful tool calls**, **20 expected library-authorization errors**, **3 expected expired-auth call failures**, and four completed OAuth callbacks (two users, initial sign-in and reauthentication). All five disposable client profiles stopped their daemons. Evidence: `evidence/inspector/*.json`, `evidence/inspector-summary.json`. Separate unchanged-provider regression: **3 passed**, 1 existing warning, 36.85 seconds (`evidence/oidc-regression.log`). Static checks passed (`evidence/client-static-checks.log`).
+
+**Failed, diagnosed and corrected:** the first harness supplied mutually exclusive Inspector catalog options; a later 45-second test JWT was immediately stale to Inspector's 60-second expiry margin. The harness now uses only its explicit private config and genuine 120-second provider tokens for the expiry scenario. No client security check or authorization assertion was weakened. No Kolibre/CalibreMCP application defect was confirmed and no application-code change was needed. The bounded optional TTL setting is in the disposable provider only; its default remains 300 seconds.
+
+**Not tested:** desktop chat applications and browser rendering, refresh-token renewal (disabled in the expiry client), external/persistent IdPs, deployed HTTPS proxy behavior, ARM artifacts, load/security review, and semantic/vector RAG. Existing wider CalibreMCP failures below remain unresolved; those suites, backend unit tests, and React build were not rerun during this milestone because application code was unchanged.
+
+Read [INTEROPERABILITY.md](INTEROPERABILITY.md) for exact coverage, setup failures and limits. [ORACLE_STAGING_PLAN.md](ORACLE_STAGING_PLAN.md) specifies the proposed capacity, ports, HTTPS, IdP gate, storage, backups and isolation. **No Oracle access or deployment occurred.** The new milestone changes are local, uncommitted and unpushed. Prior application fixes and the earlier harness snapshot were already pushed to both `dev/local-multiuser-integration` branches; no merge has occurred. [CHECKPOINT.md](CHECKPOINT.md) records current state; the historical evidence below is preserved.
+
+## Original local integration milestone
+
 The requested local two-user integration is demonstrated on running components and reproduced from a clean checkout. This report makes no production-readiness claim. No Oracle VPS, public deployment, production BookOrbit/Siyuan, or existing Calibre library was accessed.
 
 ## Passed
@@ -52,7 +78,7 @@ Missing, truncated and same-size-corrupted source files preserve the valid priva
 
 ## Failed, fixed and retested
 
-All fixes are local commits on `dev/local-multiuser-integration`; reproducible patch files are included. Nothing was pushed, merged or deployed.
+All fixes below are commits on the pushed `dev/local-multiuser-integration` branches; reproducible patch files are included. The earlier claim that they were not pushed predates the user's completed GitHub-sync request. Nothing was merged or deployed.
 
 | Defect | Exact fix commit | Regression evidence |
 |---|---|---|

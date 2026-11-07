@@ -1,0 +1,113 @@
+From bc1e932321d0bb1dcc91a8c696c635901222b9a9 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 13:49:39 +0300
+Subject: [PATCH] fix(logging): support isolated service log paths
+
+---
+ docs/kolibre-multiuser-mcp.md             |  8 ++++
+ src/calibre_mcp/logging_config.py         | 13 ++++++-
+ tests/unit/test_kolibre_bridge_logging.py | 47 +++++++++++++++++++++++
+ 3 files changed, 67 insertions(+), 1 deletion(-)
+ create mode 100644 tests/unit/test_kolibre_bridge_logging.py
+
+diff --git a/docs/kolibre-multiuser-mcp.md b/docs/kolibre-multiuser-mcp.md
+index 1e57d0b..3ca371d 100644
+--- a/docs/kolibre-multiuser-mcp.md
++++ b/docs/kolibre-multiuser-mcp.md
+@@ -47,6 +47,14 @@ export KOLIBRE_BACKEND_URL=http://127.0.0.1:8081
+ python -m calibre_mcp.kolibre_bridge
+ ```
+ 
++For a service with a protected or unwritable home, set
++`CALIBRE_MCP_LOG_FILE` to an absolute path in a dedicated writable log
++directory. For example, a systemd service can use
++`/var/log/kolibre-mcp-stage/bridge.jsonl` with its own `LogsDirectory`.
++The home directory and Kolibre book storage need not be writable or accessible
++to the bridge. Without this setting, the existing per-user log path remains
++the default. Relative overrides are rejected.
++
+ The listener defaults to `127.0.0.1:10721/mcp`. A non-loopback bind
+ is deliberately rejected. This is a separate process and does not replace
+ the existing CalibreMCP server.
+diff --git a/src/calibre_mcp/logging_config.py b/src/calibre_mcp/logging_config.py
+index 4d602a1..4d2847f 100644
+--- a/src/calibre_mcp/logging_config.py
++++ b/src/calibre_mcp/logging_config.py
+@@ -18,9 +18,20 @@ from datetime import datetime
+ from pathlib import Path
+ from typing import Any
+ 
++
+ # Absolute, never cwd-relative: Claude Desktop spawns stdio servers with
+ # cwd=C:\Windows\System32, where a relative "logs/" is not writable (BUG-063).
+-DEFAULT_LOG_FILE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "calibre-mcp" / "logs" / "calibremcp.log"
++def _default_log_file() -> Path:
++    configured = os.environ.get("CALIBRE_MCP_LOG_FILE", "").strip()
++    if configured:
++        path = Path(configured)
++        if not path.is_absolute():
++            raise ValueError("CALIBRE_MCP_LOG_FILE must be an absolute path")
++        return path
++    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "calibre-mcp" / "logs" / "calibremcp.log"
++
++
++DEFAULT_LOG_FILE = _default_log_file()
+ 
+ 
+ def _is_mcp_server() -> bool:
+diff --git a/tests/unit/test_kolibre_bridge_logging.py b/tests/unit/test_kolibre_bridge_logging.py
+new file mode 100644
+index 0000000..76f79d1
+--- /dev/null
++++ b/tests/unit/test_kolibre_bridge_logging.py
+@@ -0,0 +1,47 @@
++"""The restricted bridge starts without needing a writable personal home."""
++
++import json
++import os
++import subprocess
++import sys
++
++
++def test_bridge_uses_explicit_log_file_when_default_home_path_is_unusable(tmp_path):
++    blocked = tmp_path / "blocked-home-data"
++    blocked.write_text("Not a directory")
++    log = tmp_path / "service-logs" / "bridge.jsonl"
++    env = {
++        **os.environ,
++        "LOCALAPPDATA": str(blocked),
++        "CALIBRE_MCP_LOG_FILE": str(log),
++        "KOLIBRE_MCP_OIDC_ISSUER": "",
++        "CALIBRE_LIBRARY_PATH": str(tmp_path / "no-user-library"),
++    }
++    result = subprocess.run(
++        [
++            sys.executable,
++            "-c",
++            """
++import asyncio, json
++from calibre_mcp.kolibre_bridge.server import create_bridge
++async def main():
++    tools = await create_bridge().list_tools()
++    print(json.dumps(sorted(tool.name for tool in tools)))
++asyncio.run(main())
++""",
++        ],
++        env=env,
++        capture_output=True,
++        text=True,
++        timeout=20,
++        check=False,
++    )
++    assert result.returncode == 0, result.stderr
++    assert json.loads(result.stdout) == [
++        "kolibre_list_books",
++        "kolibre_list_libraries",
++        "kolibre_my_annotations",
++        "kolibre_search_fulltext",
++    ]
++    assert log.is_file()
++    assert blocked.is_file()
+-- 
+2.55.0
+

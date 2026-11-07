@@ -1,0 +1,137 @@
+{
+  "realm": {
+    "accessTokenLifespan": 300,
+    "revokeRefreshToken": true,
+    "refreshTokenMaxReuse": 0,
+    "offlineSessionMaxLifespanEnabled": true,
+    "offlineSessionIdleTimeout": 1800,
+    "offlineSessionMaxLifespan": 28800
+  },
+  "client": {
+    "clientId": "kolibre-chatgpt-stage",
+    "publicClient": false,
+    "fullScopeAllowed": false,
+    "standardFlowEnabled": true,
+    "implicitFlowEnabled": false,
+    "directAccessGrantsEnabled": false,
+    "serviceAccountsEnabled": false,
+    "consentRequired": true,
+    "redirectUris": [
+      "https://chatgpt.com/connector_platform_oauth_redirect"
+    ]
+  },
+  "client_attributes": {
+    "access.token.lifespan": "300",
+    "client.offline.session.idle.timeout": "1800",
+    "client.offline.session.max.lifespan": "28800",
+    "pkce.code.challenge.method": "S256"
+  },
+  "default_scopes": [
+    "books:read"
+  ],
+  "optional_scopes": [
+    "offline_access"
+  ],
+  "mappers": [
+    {
+      "name": "Kolibre MCP audience",
+      "provider": "oidc-audience-mapper",
+      "config": {
+        "id.token.claim": "false",
+        "access.token.claim": "true",
+        "introspection.token.claim": "true",
+        "included.custom.audience": "https://books.drkhn.site/kolibre-mcp-stage/mcp",
+        "userinfo.token.claim": "false"
+      }
+    },
+    {
+      "name": "Kolibre MCP client audience",
+      "provider": "oidc-audience-mapper",
+      "config": {
+        "included.client.audience": "kolibre-mcp-resource",
+        "id.token.claim": "false",
+        "access.token.claim": "true",
+        "introspection.token.claim": "true",
+        "userinfo.token.claim": "false"
+      }
+    },
+    {
+      "name": "Stable Keycloak subject",
+      "provider": "oidc-sub-mapper",
+      "config": {
+        "access.token.claim": "true",
+        "introspection.token.claim": "true"
+      }
+    }
+  ],
+  "registration_policies": [
+    {
+      "provider": "scope",
+      "config": {}
+    },
+    {
+      "provider": "trusted-hosts",
+      "config": {
+        "host-sending-registration-request-must-match": [
+          "true"
+        ],
+        "trusted-hosts": [
+          "151.250.102.94",
+          "127.0.0.1",
+          "localhost",
+          "github.com"
+        ],
+        "client-uris-must-match": [
+          "true"
+        ]
+      }
+    },
+    {
+      "provider": "default-roles",
+      "config": {}
+    },
+    {
+      "provider": "allowed-client-templates",
+      "config": {
+        "allow-default-scopes": [
+          "true"
+        ],
+        "allowed-client-scopes": [
+          "books:read",
+          "openid"
+        ]
+      }
+    },
+    {
+      "provider": "consent-required",
+      "config": {}
+    },
+    {
+      "provider": "registration-web-origins",
+      "config": {}
+    },
+    {
+      "provider": "max-clients",
+      "config": {
+        "max-clients": [
+          "24"
+        ]
+      }
+    },
+    {
+      "provider": "allowed-protocol-mappers",
+      "config": {
+        "allowed-protocol-mapper-types": [
+          "oidc-usermodel-property-mapper",
+          "oidc-full-name-mapper",
+          "saml-user-attribute-mapper",
+          "oidc-sha256-pairwise-sub-mapper",
+          "saml-role-list-mapper",
+          "oidc-usermodel-attribute-mapper",
+          "saml-user-property-mapper",
+          "oidc-address-mapper"
+        ]
+      }
+    }
+  ]
+}

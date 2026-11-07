@@ -348,9 +348,12 @@ async def test_oidc_invalid_tokens_and_expiration(oidc):
         signed(aud="wrong-audience"),
         signed(iss="https://wrong.example"),
         signed(sub="unlinked"),
+        signed(scope="openid"),
+        signed(scope="books:read:all"),
+        signed(scope=["books:read"]),
         authorize(lab, "unlinked"),
     ]
-    for missing in ("aud", "iss", "exp", "sub"):
+    for missing in ("aud", "iss", "exp", "sub", "scope"):
         claims = {name: value for name, value in base.items() if name != missing}
         invalid.append(
             jwt.encode(

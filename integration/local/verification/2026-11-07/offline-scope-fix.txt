@@ -1,0 +1,2 @@
+Configured kolibre-chatgpt-stage: exact ChatGPT callback, S256, consent, books:read, TTL=300s, optional offline access bounded to 8h/30m idle; secret saved privately
+PASS: advertised openid books:read offline_access accepted for both users; optional offline refresh is bounded <=8h, rotates, maps correct accounts and retains concurrent MCP private isolation; revoked offline refresh tokens rejected. No ChatGPT UI test.

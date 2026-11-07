@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted Kolibre staging backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+Unit=kolibre-stage-backup.service
+
+[Install]
+WantedBy=timers.target

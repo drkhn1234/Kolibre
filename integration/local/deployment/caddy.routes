@@ -1,0 +1,55 @@
+# Import inside the existing books.drkhn.site block. No existing route removed.
+handle /.well-known/oauth-authorization-server/kolibre-auth-stage/realms/kolibre-stage {
+    rewrite * /kolibre-auth-stage/realms/kolibre-stage/.well-known/openid-configuration
+    reverse_proxy 127.0.0.1:18083
+}
+handle /.well-known/openid-configuration/kolibre-auth-stage/realms/kolibre-stage {
+    rewrite * /kolibre-auth-stage/realms/kolibre-stage/.well-known/openid-configuration
+    reverse_proxy 127.0.0.1:18083
+}
+
+handle /.well-known/oauth-protected-resource/kolibre-mcp-stage/mcp {
+    reverse_proxy 127.0.0.1:18082
+}
+
+handle_path /kolibre-mcp-stage/* {
+    request_body {
+        max_size 1MB
+    }
+    reverse_proxy 127.0.0.1:18082 {
+        flush_interval -1
+        stream_timeout 10m
+    }
+}
+
+handle /kolibre-auth-stage/* {
+    route {
+        @registration path /kolibre-auth-stage/realms/kolibre-stage/clients-registrations/*
+        handle @registration {
+            @approved_client remote_ip TRUSTED_CLIENT_IP
+            handle @approved_client {
+                reverse_proxy 127.0.0.1:18083
+            }
+            handle {
+                respond 403
+            }
+        }
+        @stage_auth path /kolibre-auth-stage/realms/kolibre-stage/* /kolibre-auth-stage/resources/*
+        handle @stage_auth {
+            request_body {
+                max_size 256KB
+            }
+            reverse_proxy 127.0.0.1:18083
+        }
+        handle {
+            respond 404
+        }
+    }
+}
+
+handle_path /kolibre-api-stage/* {
+    request_body {
+        max_size 25MB
+    }
+    reverse_proxy 127.0.0.1:18081
+}

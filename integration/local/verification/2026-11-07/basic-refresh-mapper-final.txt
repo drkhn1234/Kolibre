@@ -1,0 +1,1 @@
+PASS: openid books:read accepted for both users; refresh expires_in <=8h, rotates, maps correct accounts and retains concurrent MCP private isolation; revoked refresh tokens rejected. No ChatGPT UI test.
