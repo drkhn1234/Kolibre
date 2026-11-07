@@ -1,0 +1,43 @@
+name: kolibre-stage
+services:
+  idp-db:
+    image: postgres@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    env_file: /etc/kolibre-stage/postgres.env
+    volumes:
+      - idp-data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=30"]
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kolibre_idp -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [identity]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  idp:
+    image: quay.io/keycloak/keycloak@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b
+    command: ["start", "--features=resource-indicators"]
+    env_file: /etc/kolibre-stage/keycloak.env
+    ports: ["127.0.0.1:18083:8080"]
+    depends_on:
+      idp-db: {condition: service_healthy}
+    mem_limit: 2g
+    cpus: 1.0
+    restart: unless-stopped
+    networks: [identity]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  identity:
+    name: kolibre-stage-identity
+    ipam:
+      config: [{subnet: "172.30.71.0/24"}]
+volumes:
+  idp-data:
+    name: kolibre-stage-idp-data

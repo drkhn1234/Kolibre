@@ -1,0 +1,91 @@
+From 072c06541585dc494ad137faf84603f8d6617194 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 17:02:27 +0300
+Subject: [PATCH] feat(bridge): describe restricted tool safety and OAuth
+ scopes
+
+---
+ src/calibre_mcp/kolibre_bridge/server.py | 23 ++++++++++++++++++-----
+ tests/unit/test_kolibre_bridge.py        |  7 +++++++
+ 2 files changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/src/calibre_mcp/kolibre_bridge/server.py b/src/calibre_mcp/kolibre_bridge/server.py
+index 14e4f39..6933a73 100644
+--- a/src/calibre_mcp/kolibre_bridge/server.py
++++ b/src/calibre_mcp/kolibre_bridge/server.py
+@@ -54,7 +54,8 @@ def _oauth_provider(client: KolibreClient) -> TokenVerifier | RemoteAuthProvider
+     """Use native bearer verification locally, or OAuth discovery via OIDC.
+ 
+     RemoteAuthProvider delegates browser authorization + PKCE/client
+-    registration to the operator's OIDC issuer (which MUST support DCR).
++    registration to the operator's OIDC issuer. Clients may use a
++    pre-registered client, guarded DCR, or supported metadata documents.
+     Kolibre verifies the issuer's signed JWT access token and explicitly
+     maps its (issuer, subject) to an existing Kolibre user on every call.
+     """
+@@ -91,7 +92,19 @@ def create_bridge(client: KolibreClient | None = None) -> FastMCP:
+         auth=_oauth_provider(client),
+     )
+ 
+-    @mcp.tool()
++    # Descriptive hints for MCP hosts; authentication is enforced separately
++    # on every HTTP request and Kolibre API call. Never expose anonymous tools.
++    tool_metadata = {
++        "annotations": {
++            "readOnlyHint": True,
++            "destructiveHint": False,
++            "idempotentHint": True,
++            "openWorldHint": False,
++        },
++        "meta": {"securitySchemes": [{"type": "oauth2", "scopes": ["books:read"]}]},
++    }
++
++    @mcp.tool(**tool_metadata)
+     async def kolibre_list_libraries() -> dict:
+         """List ONLY the logged-in reader's shared and owned private libraries.
+ 
+@@ -100,7 +113,7 @@ def create_bridge(client: KolibreClient | None = None) -> FastMCP:
+         """
+         return {"libraries": await client.libraries(_caller_bearer())}
+ 
+-    @mcp.tool()
++    @mcp.tool(**tool_metadata)
+     async def kolibre_list_books(library: str, query: str = "", limit: int = 25) -> dict:
+         """Find books in an authorized Kolibre library; no raw paths or DB IDs.
+ 
+@@ -111,7 +124,7 @@ def create_bridge(client: KolibreClient | None = None) -> FastMCP:
+             "books": await client.books(_caller_bearer(), library, query=query, limit=limit),
+         }
+ 
+-    @mcp.tool()
++    @mcp.tool(**tool_metadata)
+     async def kolibre_search_fulltext(library: str, query: str, limit: int = 15) -> dict:
+         """Search indexed passages in ONE authorized library.
+ 
+@@ -123,7 +136,7 @@ def create_bridge(client: KolibreClient | None = None) -> FastMCP:
+             "results": await client.fulltext(_caller_bearer(), library, query, limit=limit),
+         }
+ 
+-    @mcp.tool()
++    @mcp.tool(**tool_metadata)
+     async def kolibre_my_annotations(library: str | None = None, limit: int = 50) -> dict:
+         """Read the signed-in user's own highlights and notes, not other readers'."""
+         return {"annotations": await client.annotations(_caller_bearer(), library=library, limit=limit)}
+diff --git a/tests/unit/test_kolibre_bridge.py b/tests/unit/test_kolibre_bridge.py
+index 8c0e42d..14ef1fa 100644
+--- a/tests/unit/test_kolibre_bridge.py
++++ b/tests/unit/test_kolibre_bridge.py
+@@ -257,3 +257,10 @@ async def test_only_four_read_only_tools_are_registered(fake_upstream):
+         "kolibre_search_fulltext",
+         "kolibre_my_annotations",
+     }
++    for tool in tools:
++        descriptor = tool.to_mcp_tool()
++        assert descriptor.annotations.readOnlyHint is True
++        assert descriptor.annotations.destructiveHint is False
++        assert descriptor.annotations.idempotentHint is True
++        assert descriptor.annotations.openWorldHint is False
++        assert descriptor.meta["securitySchemes"] == [{"type": "oauth2", "scopes": ["books:read"]}]
+-- 
+2.55.0
+

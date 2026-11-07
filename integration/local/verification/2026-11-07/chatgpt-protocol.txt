@@ -1,0 +1,3 @@
+Configured kolibre-chatgpt-stage: exact ChatGPT callback, S256, consent, books:read, TTL=120s; secret saved privately
+PASS: predefined ChatGPT client: exact redirect/issuer, S256, bad verifier/secret/redirect rejected; signed resource tokens map two users; actual Inspector initialization/four read-only tools/concurrent privacy/revocation/reconnect; real token expiry; refresh rotation/replay rejection and fresh code reauthentication preserve identities. ChatGPT UI NOT tested.
+Configured kolibre-chatgpt-stage: exact ChatGPT callback, S256, consent, books:read, TTL=300s; secret saved privately

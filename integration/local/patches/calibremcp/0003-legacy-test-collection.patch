@@ -1,0 +1,130 @@
+From f01692ec40d0464e424d88dbbbc0b149bc04b19b Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 15:24:46 +0300
+Subject: [PATCH] fix(test): guard legacy scripts against missing Windows drive
+ paths
+
+---
+ tests/test_author_stats.py | 24 ++++++++++++++++--------
+ tests/test_db_init.py      | 21 +++++++++++++++------
+ tests/test_path_fix.py     | 30 ++++++++++++++++++++----------
+ 3 files changed, 51 insertions(+), 24 deletions(-)
+
+diff --git a/tests/test_author_stats.py b/tests/test_author_stats.py
+index df7a1e4..2e350bb 100644
+--- a/tests/test_author_stats.py
++++ b/tests/test_author_stats.py
+@@ -3,17 +3,25 @@
+ import sys
+ from pathlib import Path
+ 
+-sys.path.insert(0, str(Path(__file__).parent / "src"))
++import pytest
+ 
+-from calibre_mcp.db.database import init_database
+-from calibre_mcp.services.author_service import author_service
++sys.path.insert(0, str(Path(__file__).parent / "src"))
+ 
+-# Initialize with L: library
+ library_path = r"L:\Multimedia Files\Written Word\Calibre-Bibliothek"
+ db_path = library_path + r"\metadata.db"
+ 
+-init_database(db_path)
+ 
+-stats = author_service.get_author_stats()
+-for _idx, _author in enumerate(stats["top_authors"][:10], 1):
+-    pass
++@pytest.mark.skipif(not Path(db_path).exists(), reason="Requires local Calibre library")
++def test_author_stats():
++    from calibre_mcp.db.database import init_database
++    from calibre_mcp.services.author_service import author_service
++
++    init_database(db_path)
++
++    stats = author_service.get_author_stats()
++    for _idx, _author in enumerate(stats["top_authors"][:10], 1):
++        pass
++
++
++if __name__ == "__main__":
++    test_author_stats()
+diff --git a/tests/test_db_init.py b/tests/test_db_init.py
+index 218c38d..f009b1b 100644
+--- a/tests/test_db_init.py
++++ b/tests/test_db_init.py
+@@ -3,15 +3,24 @@
+ import sys
+ from pathlib import Path
+ 
+-sys.path.insert(0, str(Path(__file__).parent / "src"))
++import pytest
+ 
+-from calibre_mcp.db.database import init_database
+-from calibre_mcp.services.tag_service import tag_service
++sys.path.insert(0, str(Path(__file__).parent / "src"))
+ 
+-# Initialize with L: library
+ library_path = r"L:\Multimedia Files\Written Word\Calibre-Bibliothek"
+ db_path = library_path + r"\metadata.db"
+ 
+-init_database(db_path)
+ 
+-stats = tag_service.get_tag_statistics()
++@pytest.mark.skipif(not Path(db_path).exists(), reason="Requires local Calibre library")
++def test_db_init():
++    from calibre_mcp.db.database import init_database
++    from calibre_mcp.services.tag_service import tag_service
++
++    init_database(db_path)
++
++    stats = tag_service.get_tag_statistics()
++    assert stats is not None
++
++
++if __name__ == "__main__":
++    test_db_init()
+diff --git a/tests/test_path_fix.py b/tests/test_path_fix.py
+index d5ce906..3b1c67a 100644
+--- a/tests/test_path_fix.py
++++ b/tests/test_path_fix.py
+@@ -3,17 +3,27 @@
+ import sys
+ from pathlib import Path
+ 
++import pytest
++
+ sys.path.insert(0, str(Path(__file__).parent / "src"))
+ 
+-from calibre_mcp.db.database import init_database
+-from calibre_mcp.services.book_service import book_service
++db_path = r"L:\Multimedia Files\Written Word\Calibre-Bibliothek\metadata.db"
++
++
++@pytest.mark.skipif(not Path(db_path).exists(), reason="Requires local Calibre library")
++def test_path_fix():
++    from calibre_mcp.db.database import init_database
++    from calibre_mcp.services.book_service import book_service
++
++    init_database(db_path)
++
++    # Get book 6696
++    book = book_service.get_by_id(6696)
++    if book:
++        for fmt in book.get("formats", []):
++            path = Path(fmt.get("path"))
++            assert path is not None
+ 
+-# Initialize with the L: drive library
+-init_database(r"L:\Multimedia Files\Written Word\Calibre-Bibliothek\metadata.db")
+ 
+-# Get book 6696
+-book = book_service.get_by_id(6696)
+-for fmt in book.get("formats", []):
+-    # Check if file exists
+-    path = Path(fmt.get("path"))
+-    exists = path.exists()
++if __name__ == "__main__":
++    test_path_fix()
+-- 
+2.55.0
+

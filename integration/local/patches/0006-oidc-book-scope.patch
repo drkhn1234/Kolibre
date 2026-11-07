@@ -1,0 +1,61 @@
+From c06a7cea001c853a9dfc74bd1e6e8ce627307e26 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 17:02:27 +0300
+Subject: [PATCH] fix(oidc): require delegated book read scope after JWT
+ verification
+
+---
+ backend/app/services/oidc_identity.py    |  6 ++++++
+ backend/tests/test_oidc_user_identity.py | 11 +++++++++--
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/backend/app/services/oidc_identity.py b/backend/app/services/oidc_identity.py
+index 392c827..8d5edc1 100644
+--- a/backend/app/services/oidc_identity.py
++++ b/backend/app/services/oidc_identity.py
+@@ -79,6 +79,12 @@ def verify_oidc_claims(token: str) -> tuple[str, str]:
+         sub = claims.get("sub")
+         if not isinstance(sub, str) or not sub or len(sub) > 512:
+             raise OIDCIdentityError("Invalid OIDC subject")
++        # Identity and audience alone do not grant delegated book access.
++        # Enforce the application scope only after signature verification;
++        # native Kolibre logins keep their existing authorization path.
++        scope = claims.get("scope")
++        if not isinstance(scope, str) or "books:read" not in scope.split():
++            raise OIDCIdentityError("OIDC token requires books:read scope")
+     except (JWTError, httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError) as exc:
+         raise OIDCIdentityError("OIDC verification failed") from exc
+ 
+diff --git a/backend/tests/test_oidc_user_identity.py b/backend/tests/test_oidc_user_identity.py
+index 2bdf966..2031c03 100644
+--- a/backend/tests/test_oidc_user_identity.py
++++ b/backend/tests/test_oidc_user_identity.py
+@@ -85,9 +85,9 @@ class OIDCUserIdentityTests(unittest.TestCase):
+         self.db.close()
+         self.engine.dispose()
+ 
+-    def signed(self, *, sub="external-sister", iss=ISSUER, aud=AUDIENCE, exp=3600):
++    def signed(self, *, sub="external-sister", iss=ISSUER, aud=AUDIENCE, exp=3600, scope="openid books:read"):
+         return jwt.encode({
+-            "sub": sub, "iss": iss, "aud": aud,
++            "sub": sub, "iss": iss, "aud": aud, "scope": scope,
+             "exp": datetime.now(timezone.utc) + timedelta(seconds=exp),
+         }, self.pem, algorithm="RS256", headers={"kid": "key-1"})
+ 
+@@ -114,6 +114,13 @@ class OIDCUserIdentityTests(unittest.TestCase):
+                     auth._decode_token(token, self.db)
+                 self.assertEqual(ctx.exception.status_code, 401)
+ 
++    def test_missing_insufficient_or_malformed_scope_is_rejected(self):
++        for scope in (None, "", "openid", "books:read:all", ["books:read"]):
++            with self.subTest(scope=scope):
++                with self.assertRaises(HTTPException) as ctx:
++                    auth._decode_token(self.signed(scope=scope), self.db)
++                self.assertEqual(ctx.exception.status_code, 401)
++
+     def test_tampering_subject_invalidates_signature(self):
+         token = self.signed()
+         h, p, sig = token.split(".")
+-- 
+2.55.0
+
