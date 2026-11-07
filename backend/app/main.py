@@ -957,3 +957,7 @@ app.include_router(books_router.device_or_user_router)                    # pers
 app.include_router(books_router.public_router)
 app.include_router(authors_router.public_router)
 app.include_router(tools_router.public_router)
+
+# Optional retrieval retains the same authenticated API boundary.
+from .api import knowledge as knowledge_router
+app.include_router(knowledge_router.router, dependencies=_AUTH)

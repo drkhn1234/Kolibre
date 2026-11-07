@@ -1,0 +1,2 @@
+# Optional CPU embedding worker/API dependencies, separate from the baseline.
+fastembed==0.9.1
