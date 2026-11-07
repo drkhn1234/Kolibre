@@ -577,7 +577,7 @@ local KolibreMenuPin = require("kolibre_menu_pin")
 local KolibreCatalog = require("kolibre_catalog")
 local KolibreCapabilities = require("kolibre_capabilities")
 
-local VERSION = "0.6.16"
+local VERSION = "0.6.17"
 local EBOOK_EXTENSIONS = { epub = true, pdf = true, mobi = true, azw3 = true, fb2 = true, txt = true }
 
 -- Set once _resumePendingUpdate has run for this KOReader process (see

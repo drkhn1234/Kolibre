@@ -31,14 +31,19 @@ local KolibreLingua = {}
 
 -- ── Lingua attiva ──
 --
--- PUNTO UNICO in cui si decide quale catalogo usare. Oggi fissato a "it" di
--- proposito (valore di partenza, come richiesto) — la propagazione dal server
--- (impostazione dell'account Kolibre, inoltrata al device nell'handshake di
--- sync o altrove) si collega QUI, sostituendo l'assegnazione sottostante con
--- la lettura di quel valore. Nessun altro punto di questo modulo, né alcun
--- chiamante in main.lua/kolibre_catalog.lua/kolibre_catalog_widgets.lua, deve
--- sapere come quel valore arriva: tutti passano per KolibreLingua.t().
-local active_lang = "it"
+-- Use an explicit plugin override when present, otherwise KOReader's language.
+-- The web UI stores its preference in its own browser; no server/account
+-- language propagation exists yet. Unsupported languages fall back to English.
+local function activeLanguage()
+    local language
+    if G_reader_settings then
+        language = G_reader_settings:readSetting("kolibre_language")
+            or G_reader_settings:readSetting("language")
+    end
+    language = language or os.getenv("LANGUAGE") or os.getenv("LC_ALL")
+        or os.getenv("LC_MESSAGES") or os.getenv("LANG") or "en"
+    return type(language) == "string" and language:lower():match("^it") and "it" or "en"
+end
 
 -- ── Catalogo italiano (lingua di riferimento) ──
 local it = {
@@ -567,7 +572,7 @@ end
 -- values.count == 1, the second otherwise — then interpolates {name}
 -- placeholders from `values` (which may be nil for a plain lookup).
 function KolibreLingua.t(key, values)
-    local catalog = catalogs[active_lang] or it
+    local catalog = catalogs[activeLanguage()] or en
     local template = catalog[key] or it[key] or key
 
     local bar = template:find(" | ", 1, true)
