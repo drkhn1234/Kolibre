@@ -1,0 +1,68 @@
+From b21ecc1e2121bff7c37f4234dcbad98f72d3237e Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 7 Nov 2026 21:51:26 +0300
+Subject: [PATCH] Fix KOReader plugin hardcoded Italian language and default to
+ reader locale
+
+---
+ .../kolibre.koplugin/kolibre_lingua.lua       | 23 +++++++++++--------
+ plugins/koreader/kolibre.koplugin/main.lua    |  2 +-
+ 2 files changed, 15 insertions(+), 10 deletions(-)
+
+diff --git a/plugins/koreader/kolibre.koplugin/kolibre_lingua.lua b/plugins/koreader/kolibre.koplugin/kolibre_lingua.lua
+index 543f0ca..0b5504e 100644
+--- a/plugins/koreader/kolibre.koplugin/kolibre_lingua.lua
++++ b/plugins/koreader/kolibre.koplugin/kolibre_lingua.lua
+@@ -31,14 +31,19 @@ local KolibreLingua = {}
+ 
+ -- ── Lingua attiva ──
+ --
+--- PUNTO UNICO in cui si decide quale catalogo usare. Oggi fissato a "it" di
+--- proposito (valore di partenza, come richiesto) — la propagazione dal server
+--- (impostazione dell'account Kolibre, inoltrata al device nell'handshake di
+--- sync o altrove) si collega QUI, sostituendo l'assegnazione sottostante con
+--- la lettura di quel valore. Nessun altro punto di questo modulo, né alcun
+--- chiamante in main.lua/kolibre_catalog.lua/kolibre_catalog_widgets.lua, deve
+--- sapere come quel valore arriva: tutti passano per KolibreLingua.t().
+-local active_lang = "it"
++-- Use an explicit plugin override when present, otherwise KOReader's language.
++-- The web UI stores its preference in its own browser; no server/account
++-- language propagation exists yet. Unsupported languages fall back to English.
++local function activeLanguage()
++    local language
++    if G_reader_settings then
++        language = G_reader_settings:readSetting("kolibre_language")
++            or G_reader_settings:readSetting("language")
++    end
++    language = language or os.getenv("LANGUAGE") or os.getenv("LC_ALL")
++        or os.getenv("LC_MESSAGES") or os.getenv("LANG") or "en"
++    return type(language) == "string" and language:lower():match("^it") and "it" or "en"
++end
+ 
+ -- ── Catalogo italiano (lingua di riferimento) ──
+ local it = {
+@@ -567,7 +572,7 @@ end
+ -- values.count == 1, the second otherwise — then interpolates {name}
+ -- placeholders from `values` (which may be nil for a plain lookup).
+ function KolibreLingua.t(key, values)
+-    local catalog = catalogs[active_lang] or it
++    local catalog = catalogs[activeLanguage()] or en
+     local template = catalog[key] or it[key] or key
+ 
+     local bar = template:find(" | ", 1, true)
+diff --git a/plugins/koreader/kolibre.koplugin/main.lua b/plugins/koreader/kolibre.koplugin/main.lua
+index 6b3d397..4db89f3 100644
+--- a/plugins/koreader/kolibre.koplugin/main.lua
++++ b/plugins/koreader/kolibre.koplugin/main.lua
+@@ -577,7 +577,7 @@ local KolibreMenuPin = require("kolibre_menu_pin")
+ local KolibreCatalog = require("kolibre_catalog")
+ local KolibreCapabilities = require("kolibre_capabilities")
+ 
+-local VERSION = "0.6.16"
++local VERSION = "0.6.17"
+ local EBOOK_EXTENSIONS = { epub = true, pdf = true, mobi = true, azw3 = true, fb2 = true, txt = true }
+ 
+ -- Set once _resumePendingUpdate has run for this KOReader process (see
+-- 
+2.55.0
+

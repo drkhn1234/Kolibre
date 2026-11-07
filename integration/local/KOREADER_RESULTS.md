@@ -76,3 +76,19 @@ settings/kolibre_manifest.lua. Startup-only standalone module attempts exited
 before a reader context was initialized, so they were replaced with actual
 reader.lua startup. The initial /devices/settings probe404 used a nonexistent
 URL; actual /api/devices/me and plugin sync endpoints succeeded.
+
+## Language follow-up
+
+User's screenshot confirms the normal profile connected and detected the queued
+book. The plugin's locale module was hardcoded to Italian despite a full English
+catalog. Fixed in plugin0.6.17 (Kolibre b21ecc1): explicit kolibre_language override,
+otherwise KOReader language/locale, unsupported languages default English.
+Browser-local web language does not propagate to the plugin/account automatically.
+Installed normal-profile main.lua/locale update, preserving gconfig credential;
+provisioned explicit English on next launch. Existing process needs restart to
+reload Lua modules. clients/koreader/test_language.lua passes using actual Flatpak
+LuaJIT (English/Italian/regional forms/fallback/override/plurals).
+
+The requested action is **KOReader → Tools menu → Kolibre → Sync everything**,
+not a web-app button. Old loaded label is **Sincronizza tutto**. Startup check
+only announces pending downloads; manual sync asks permission to receive them.

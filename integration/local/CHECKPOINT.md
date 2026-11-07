@@ -1,3 +1,5 @@
+> KOReader language bug fixed: plugin0.6.17 follows reader locale/explicit override rather than hardcoded Italian. Local plugin updated; explicit English staged in private gconfig for next launch. User screenshot confirms normal device connection/pending delivery; manual sync is in KOReader Tools → Kolibre (old label Sincronizza tutto), not web UI. Locale regression passes. Backend source b21ecc1 (full hash via Git); bridge/web unchanged.
+
 > Regular KOReader profile now provisioned: device4 **KOReader Flatpak — drkhn**,
 > owner founder, plugin in ~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/kolibre.koplugin,
 > dedicated books ~/Documents/Kolibre. Existing active settings contents left intact;

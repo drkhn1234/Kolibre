@@ -31,6 +31,13 @@ def main():
         root = Path("/opt") / name
         old = (root / "current").resolve(strict=True)
         target = root / "releases" / revision
+        if target == old:
+            saved = json.loads(Path("/etc/kolibre-stage/revisions.json").read_text())[
+                name
+            ]
+            assert saved["git_commit"] == revision and saved["release"] == str(target)
+            releases.append((root, old, target, revision, saved["files_sha256"]))
+            continue
         assert not target.exists(), f"Release already exists: {target}"
         archive = Path("/tmp") / f"kolibre-source-{revision}.tar"
         target.mkdir()
@@ -55,17 +62,24 @@ def main():
     # Dependencies already exist in the isolated environment; never import legacy tools.
     backend_target = releases[0][2]
     bridge_target = releases[1][2]
+    assert backend_target != releases[0][1] or bridge_target == releases[1][1], (
+        "Bridge changes require a new backend dependency environment"
+    )
     (
         backend_target / ".venv/lib/python3.12/site-packages/kolibre_retrieval.pth"
     ).write_text(str(bridge_target / "src") + "\n")
+    changed = [
+        root.name for root, old, target, revision, files in releases if target != old
+    ]
     try:
         for root, old, target, revision, files in releases:
+            if target == old:
+                continue
             temporary = root / "current.next"
             temporary.symlink_to(target)
             temporary.replace(root / "current")
-        subprocess.run(
-            ["systemctl", "restart", "kolibre-stage", "kolibre-mcp-stage"], check=True
-        )
+        if changed:
+            subprocess.run(["systemctl", "restart", *changed], check=True)
         import time
         import urllib.error
         import urllib.request
@@ -88,12 +102,13 @@ def main():
             raise RuntimeError("Stage did not become ready")
     except BaseException:
         for root, old, target, revision, files in releases:
+            if target == old:
+                continue
             temporary = root / "rollback.next"
             temporary.symlink_to(old)
             temporary.replace(root / "current")
-        subprocess.run(
-            ["systemctl", "restart", "kolibre-stage", "kolibre-mcp-stage"], check=True
-        )
+        if changed:
+            subprocess.run(["systemctl", "restart", *changed], check=True)
         raise
     manifest = {
         root.name: {
