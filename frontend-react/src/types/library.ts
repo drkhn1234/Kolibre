@@ -17,6 +17,8 @@ export interface Library {
   visibleUsers: string[]
   // Cosa può farci chi sta guardando — serve a nascondere i comandi invece
   // di offrirli e poi rispondere 403.
+  isPrivate?: boolean
+  canUpload?: boolean
   canEdit?: boolean
   canShare?: boolean
   canDelete?: boolean

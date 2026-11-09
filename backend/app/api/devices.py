@@ -34,6 +34,32 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 # device bearer token) from the rest of /api/devices (human JWT).
 sync_router = APIRouter(prefix="/api/kolibre/devices", tags=["koreader-sync"])
 
+
+def require_user_library(db: Session, user: models.User, folder: str) -> str:
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if user is None or row is None or not permessi.puo_leggere(db, user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return row.folder_name
+
+
+def resolve_accessible_device_match(db: Session, file_hash: str, device: models.Device):
+    """Restrict hash matches to libraries this device's owner may read."""
+    match = book_hash_service.resolve_first_book_match(db, file_hash, device_id=device.id)
+    if match is None:
+        return None
+    user = db.query(models.User).filter(models.User.id == device.user_id).first()
+    row = db.query(models.Library).filter(models.Library.folder_name == match.library).first()
+    return match if user and row and permessi.puo_leggere(db, user, row) else None
+
+
+def require_device_library(db: Session, device: models.Device, folder: str) -> str:
+    """Reject Calibre catalog requests outside the device owner's libraries."""
+    user = db.query(models.User).filter(models.User.id == device.user_id).first()
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if user is None or row is None or not permessi.puo_leggere(db, user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
+    return row.folder_name
+
 # Terzo router, stesso prefisso di `router` ma senza la dipendenza JWT che
 # main.py applica a quest'ultimo: raccoglie gli endpoint sotto /api/devices
 # che si autenticano con il TOKEN DI DISPOSITIVO invece che con il JWT
@@ -138,7 +164,7 @@ def _adopt_managed_books(db: Session, device: models.Device, managed: list) -> t
         file_hash = item.get("hash")
         if not file_hash:
             continue
-        match = book_hash_service.resolve_first_book_match(db, file_hash, device_id=device.id)
+        match = resolve_accessible_device_match(db, file_hash, device)
         if not match:
             continue
         fmt = (item.get("format") or "").upper() or match.format
@@ -221,6 +247,10 @@ def scan_unmatched_books(
         if stale:
             db.commit()
 
+    owner = db.query(models.User).filter(models.User.id == current_device.user_id).first()
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Device owner not found")
+    accessible = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)}
     matched, unmatched = [], []
     for item in items:
         file_hash = item.get("hash")
@@ -232,6 +262,8 @@ def scan_unmatched_books(
             continue
         candidates = []
         for hit in hits:
+            if hit.library not in accessible:
+                continue
             lib = CalibreLibrary(config.library_path(hit.library))
             book = lib.get_book(hit.calibre_book_id)
             candidates.append({
@@ -284,6 +316,8 @@ def report_flagged_book(
     """
     library = payload.get("candidate_library")
     calibre_book_id = payload.get("candidate_calibre_book_id")
+    if library and calibre_book_id:
+        require_device_library(db, current_device, library)
     if (
         payload.get("match_status") == "flagged_started"
         and payload.get("match_source") == "fingerprint"
@@ -375,7 +409,11 @@ def _build_sends(db: Session, device: models.Device) -> list:
         models.DeviceBook.status.in_(_SENDABLE_STATUSES),
     ).all()
     sends, libraries_cache = [], {}
+    owner = db.query(models.User).filter(models.User.id == device.user_id).first()
+    allowed = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)} if owner else set()
     for row in rows:
+        if row.library not in allowed:
+            continue
         lib = libraries_cache.setdefault(row.library, CalibreLibrary(config.library_path(row.library)))
         book_row = lib.get_book(row.calibre_book_id)
         author = lib.get_book_author(row.calibre_book_id)
@@ -414,7 +452,11 @@ def _build_removes(db: Session, device: models.Device) -> list:
         models.DeviceBook.status == "pending_delete",
     ).all()
     removes, libraries_cache = [], {}
+    owner = db.query(models.User).filter(models.User.id == device.user_id).first()
+    allowed = {r.folder_name for r in permessi.biblioteche_visibili(db, owner)} if owner else set()
     for row in rows:
+        if row.library not in allowed:
+            continue
         lib = libraries_cache.setdefault(row.library, CalibreLibrary(config.library_path(row.library)))
         book_row = lib.get_book(row.calibre_book_id)
         removes.append({
@@ -442,7 +484,11 @@ def _build_file_actions(db: Session, device: models.Device) -> list:
         models.DeviceFlaggedBook.pending_action.isnot(None),
     ).all()
     actions, libraries_cache = [], {}
+    owner = db.query(models.User).filter(models.User.id == device.user_id).first()
+    allowed = {lib.folder_name for lib in permessi.biblioteche_visibili(db, owner)} if owner else set()
     for row in rows:
+        if row.pending_action == "overwrite" and row.pending_action_library not in allowed:
+            continue
         entry = {
             "id": row.id,
             "action": row.pending_action,
@@ -562,8 +608,10 @@ def list_devices(
     result = []
     for d in devs:
         books = db.query(models.DeviceBook).filter(models.DeviceBook.device_id == d.id).all()
-        book_meta = _build_book_titles(books)
-        hash_verified_map = _build_hash_verified_map(db, books)
+        allowed = {lib.folder_name for lib in permessi.biblioteche_visibili(db, current_user)}
+        authorized_books = [book for book in books if book.library in allowed]
+        book_meta = _build_book_titles(authorized_books)
+        hash_verified_map = _build_hash_verified_map(db, authorized_books)
         backup_dir = os.path.join(config.BACKUPS_DIR, str(d.id))
         backup_file_count = len(os.listdir(backup_dir)) if os.path.isdir(backup_dir) else 0
         open_restore_request = _get_open_restore_request(db, d.id)
@@ -804,6 +852,9 @@ def queue_book_for_device(
     library = payload.get("library") or resolve_default_library_folder(db)
     if not library:
         raise HTTPException(status_code=404, detail="Nessuna libreria configurata. Creane una prima di continuare.")
+    lib_row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if lib_row is None or not permessi.puo_leggere(db, current_user, lib_row):
+        raise HTTPException(status_code=404, detail="Library not found")
     if not calibre_book_id:
         raise HTTPException(status_code=400, detail="calibre_book_id obbligatorio")
     fmt = (payload.get("format") or "").upper() or None
@@ -869,7 +920,10 @@ def list_libraries_for_device(
     — returns the `folder_name` slug that /catalog and /books/{id}/download
     expect as `library`, unlike the web UI's /api/kolibre/libraries which is
     display-oriented."""
-    rows = db.query(models.Library).order_by(models.Library.id).all()
+    user = db.query(models.User).filter(models.User.id == current_device.user_id).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Device owner not found")
+    rows = permessi.biblioteche_visibili(db, user)
     return [{"name": row.name, "library": row.folder_name} for row in rows]
 
 
@@ -1040,6 +1094,7 @@ def catalog_sections(
     if page < 1 or size < 1:
         raise HTTPException(status_code=400, detail="page e size devono essere >= 1")
 
+    require_device_library(db, current_device, library)
     lib = CalibreLibrary(config.library_path(library))
     all_books = lib.list_books()
     counts = _bucket_counts(all_books, section)
@@ -1109,6 +1164,7 @@ def catalog_discover(
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit deve essere >= 1")
 
+    require_device_library(db, current_device, library)
     on_device = _device_book_ids_on_device(db, current_device.id, library)
 
     recent_rows = db.query(models.ReadingSession.calibre_book_id).filter(
@@ -1217,6 +1273,7 @@ def browse_catalog(
     keeps existing behavior byte-for-byte for every caller that doesn't pass
     it — including an un-updated plugin, which never will.
     """
+    require_device_library(db, current_device, library)
     lib = CalibreLibrary(config.library_path(library))
     all_books = lib.list_books()
     books = all_books
@@ -1332,7 +1389,16 @@ async def identify_device_file(
         if not fingerprint:
             return {"matched": False, "reason": "extraction_failed"}
 
-        match = db.query(models.BookHash).filter(models.BookHash.content_fingerprint == fingerprint).first()
+        owner = db.query(models.User).filter(models.User.id == current_device.user_id).first()
+        if owner is None:
+            raise HTTPException(status_code=401, detail="Device owner not found")
+        allowed = [r.folder_name for r in permessi.biblioteche_visibili(db, owner)]
+        if not allowed:
+            return {"matched": False, "reason": "no_match"}
+        match = db.query(models.BookHash).filter(
+            models.BookHash.content_fingerprint == fingerprint,
+            models.BookHash.library.in_(allowed),
+        ).first()
         if not match:
             return {"matched": False, "reason": "no_match"}
 
@@ -1641,7 +1707,7 @@ def push_device_annotations(
         text = item.get("text")
         if not file_hash or not text:
             continue
-        match = book_hash_service.resolve_first_book_match(db, file_hash, device_id=current_device.id)
+        match = resolve_accessible_device_match(db, file_hash, current_device)
         if not match:
             local_path = item.get("path")
             if local_path and _upsert_orphan_highlight(db, current_device, local_path, file_hash, item):
@@ -1799,7 +1865,7 @@ def reconcile_device_annotations(
         file_hash, keys = f.get("hash"), f.get("keys") or []
         if not file_hash or not keys:
             continue
-        match = book_hash_service.resolve_first_book_match(db, file_hash, device_id=current_device.id)
+        match = resolve_accessible_device_match(db, file_hash, current_device)
         if not match:
             continue
         vive_pos0 = {k.get("pos0") for k in keys if k.get("pos0")}
@@ -1869,6 +1935,7 @@ def auto_pair_orphan_annotations(
     format = payload.get("format") or "EPUB"
     if not local_path or not file_hash or not library or not calibre_book_id:
         raise HTTPException(status_code=400, detail="local_path, file_hash, library e calibre_book_id sono obbligatori")
+    require_device_library(db, current_device, library)
 
     book_hash_service.record_device_hash(db, library, calibre_book_id, format, file_hash)
     migrated = _migrate_orphan_highlights(db, current_device.id, local_path, library, calibre_book_id)
@@ -1881,7 +1948,7 @@ def auto_pair_orphan_annotations(
     db.commit()
     log_message(
         "info", "annotations",
-        f"Auto-pair da '{current_device.name}': {local_path} -> {library}/{calibre_book_id} "
+        f"Auto-pair da device {current_device.id} verso un libro autorizzato "
         f"({migrated} note migrate)",
     )
     return {"status": "ok", "migrated_highlights": migrated}
@@ -2203,7 +2270,7 @@ def push_device_pages(
         if not file_hash or pages is None:
             unresolved += 1
             continue
-        match = book_hash_service.resolve_first_book_match(db, file_hash, device_id=current_device.id)
+        match = resolve_accessible_device_match(db, file_hash, current_device)
         if not match:
             unresolved += 1
             continue
@@ -2237,6 +2304,8 @@ def report_book_delivered(
     calibre_book_id = payload.get("calibre_book_id")
     fmt = (payload.get("format") or "").upper()
     library = payload.get("library") or resolve_default_library_folder(db)
+    if library:
+        require_device_library(db, current_device, library)
     if not calibre_book_id or not fmt:
         raise HTTPException(status_code=400, detail="calibre_book_id e format sono obbligatori")
     if not library:
@@ -2985,6 +3054,7 @@ def queue_flagged_book_action(
         calibre_book_id = payload.get("calibre_book_id")
         if not library or not calibre_book_id:
             raise HTTPException(status_code=400, detail="library e calibre_book_id sono obbligatori per 'overwrite'")
+        require_user_library(db, current_user, library)
         row.pending_action_library = library
         row.pending_action_calibre_book_id = calibre_book_id
         row.pending_action_format = payload.get("format")
@@ -2996,6 +3066,7 @@ def queue_flagged_book_action(
         calibre_book_id = payload.get("calibre_book_id")
         if not library or not calibre_book_id:
             raise HTTPException(status_code=400, detail="library e calibre_book_id sono obbligatori per 'pair'")
+        require_user_library(db, current_user, library)
         format = payload.get("format") or "EPUB"
         if row.file_hash:
             book_hash_service.record_device_hash(db, library, calibre_book_id, format, row.file_hash)
@@ -3111,6 +3182,7 @@ def pair_device_book(
     new_calibre_book_id = payload.get("calibre_book_id")
     if not new_library or not new_calibre_book_id:
         raise HTTPException(status_code=400, detail="library e calibre_book_id sono obbligatori")
+    require_user_library(db, current_user, new_library)
     new_format = payload.get("format") or row.format
     old_library, old_calibre_book_id = row.library, row.calibre_book_id
 

@@ -60,7 +60,7 @@ export function ImportTab() {
 
   const [destLibraryId, setDestLibraryId] = useState<number | null>(null)
   const destLibrary = useMemo(
-    () => libraries.find((l) => l.id === destLibraryId) ?? libraries[0],
+    () => libraries.find((l) => l.id === destLibraryId) ?? libraries.find((l) => !l.isPrivate && l.canUpload !== false) ?? libraries[0],
     [libraries, destLibraryId]
   )
   // Override per-card, tenuto solo in memoria (come ib._destLibraryId nel
@@ -75,6 +75,7 @@ export function ImportTab() {
   // costerebbe molto di più di quanto valga.
   const { data: duplicatiPerItem = {} } = useIngestDuplicati(destLibrary?.folder_name)
 
+  const [privateUpload, setPrivateUpload] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [rejected, setRejected] = useState<IngestRejectedFile[]>([])
   const [dragOver, setDragOver] = useState(false)
@@ -91,7 +92,7 @@ export function ImportTab() {
     setRejected([])
     setMessage(null)
     try {
-      const result = await uploadIngestFiles(files)
+      const result = await uploadIngestFiles(files, privateUpload ? 'private' : 'shared')
       setRejected(result.rejected || [])
       if (result.staged?.length) {
         const n = result.staged.length
@@ -223,7 +224,7 @@ export function ImportTab() {
   async function doImport(item: IngestedBook, libraryFolder: string) {
     setImportingIds((prev) => new Set(prev).add(item.id))
     try {
-      await importIngestBook({
+      const imported = await importIngestBook({
         id: item.id,
         library: libraryFolder,
         title: item.title,
@@ -235,7 +236,7 @@ export function ImportTab() {
         language: item.language,
         isbn: item.isbn,
       })
-      return { ok: true as const }
+      return { ok: true as const, library: imported.library }
     } catch (err) {
       return { ok: false as const, error: errorDetail(err, t('ingest.importTab.importFailed', { name: item.title })) }
     } finally {
@@ -258,7 +259,7 @@ export function ImportTab() {
     setMessage(null)
     const result = await doImport(item, target.folder_name)
     if (result.ok) {
-      setMessage({ kind: 'success', text: t('ingest.importTab.importedOneSuccess', { title: item.title, library: target.name }) })
+      setMessage({ kind: 'success', text: t('ingest.importTab.importedOneSuccess', { title: item.title, library: result.library ?? target.name }) })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: INGEST_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ['books', target.folder_name] }),
@@ -371,6 +372,10 @@ export function ImportTab() {
               {t('ingest.importTab.filesWaiting', { count: ingestBooks.length, n: ingestBooks.length })}
             </div>
           </div>
+          <label className="flex items-center gap-2 border-l border-border pl-4 text-xs" title="Private uploads go only to your own personal library">
+            <input type="checkbox" checked={privateUpload} onChange={(event) => setPrivateUpload(event.target.checked)} />
+            Private upload
+          </label>
           <div className="flex items-center gap-2 border-l border-border pl-4">
             <span className="text-[11px] text-muted-foreground">{t('ingest.importTab.destLibraryLabel')}</span>
             <LibraryPickerButton libraries={libraries} value={destLibrary} onChange={setDestLibraryId} />

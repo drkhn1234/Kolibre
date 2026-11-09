@@ -557,6 +557,28 @@ class StatsHashDiscard(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UserStatsHashPairing(Base):
+    """A book-hash match belongs to one reader, never to every account."""
+    __tablename__ = "user_stats_hash_pairings"
+    __table_args__ = (UniqueConstraint("user_id", "md5"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    md5 = Column(String, nullable=False, index=True)
+    library = Column(String, nullable=False)
+    calibre_book_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserStatsHashDiscard(Base):
+    """Discard a hash only from this user's statistics/orphan queue."""
+    __tablename__ = "user_stats_hash_discards"
+    __table_args__ = (UniqueConstraint("user_id", "md5"),)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    md5 = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ReadingSession(Base):
     """One grouped reading session (KoServer-style 15-minute-gap grouping of
     KOReader's raw page_stat_data rows — see stats_service.process_statistics_db).
@@ -818,6 +840,8 @@ class Library(Base):
     # deve poter esistere per un istante invece di bloccare l'avvio.
     # Cancellarla resta del solo proprietario: decisione del 28/09.
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Private libraries are accessible ONLY to their owners, regardless of role.
+    is_private = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -840,6 +864,8 @@ class LibraryPermission(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     library_id = Column(Integer, ForeignKey("libraries.id", ondelete="CASCADE"), nullable=False, index=True)
     can_edit = Column(Boolean, default=False, nullable=False)
+    # Contribute books without permission to edit or delete existing entries.
+    can_upload = Column(Boolean, default=False, nullable=False)
     # Condividere a sua volta: dare a un terzo l'accesso che si ha.
     can_share = Column(Boolean, default=False, nullable=False)
     # Gestire i permessi ALTRUI su questa biblioteca — piu' di condividere:
@@ -865,11 +891,32 @@ class DeletedLibraryFolder(Base):
     deleted_at = Column(DateTime, default=datetime.utcnow)
 
 
+class TrashedLibrary(Base):
+    """Deleted library ownership, not an admin-readable restored library.
+
+    New private trash entries remain accessible solely to their original
+    owner. No FK: account deletion must not strip ownership information.
+    """
+    __tablename__ = "trashed_libraries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entry = Column(String, unique=True, nullable=False, index=True)
+    folder_name = Column(String, nullable=False)
+    owner_id = Column(Integer, nullable=True, index=True)
+    is_private = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class IngestedBook(Base):
     """A file detected in the ingest/watched folder, staged for review before import."""
     __tablename__ = "ingested_books"
 
     id = Column(Integer, primary_key=True, index=True)
+    # NULL identifies trusted watcher/legacy staging. No FK: deleting an
+    # account must not turn its private staged items into trusted imports.
+    uploader_id = Column(Integer, nullable=True, index=True)
+    # Privacy decision made before upload; enforced when importing.
+    is_private = Column(Boolean, default=False, nullable=False)
     file_path = Column(String, nullable=False)
     filename = Column(String, nullable=False)
     file_format = Column(String, nullable=False)
@@ -964,6 +1011,30 @@ class AuthorMetadata(Base):
     # senza, un autore senza data di morte sarebbe indistinguibile da un
     # autore mai cercato, e si ritenterebbe all'infinito.
     wikidata_fetched_at = Column(DateTime, nullable=True)
+
+
+class PrivateBookMove(Base):
+    """Durable, owner-private recovery record for a cross-Calibre book move.
+
+    An active_key is unique while a move is pending and NULL on completion
+    or rollback (SQLite supports multiple NULLs in a UNIQUE index). Only the
+    initiating account may inspect/recover this row via the application.
+    """
+    __tablename__ = "private_book_moves"
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, nullable=False, index=True)
+    source_library = Column(String, nullable=False)
+    source_book_id = Column(Integer, nullable=False)
+    target_library = Column(String, nullable=False)
+    target_book_id = Column(Integer, nullable=True)
+    # A random token is written into the Calibre target row IN THE SAME
+    # SQLite transaction as insertion, closing the crash-before-ID gap.
+    token = Column(String, unique=True, nullable=False)
+    active_key = Column(String, unique=True, nullable=True, index=True)
+    state = Column(String, nullable=False, default="copying")
+    failure_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class PendingCalibreWrite(Base):

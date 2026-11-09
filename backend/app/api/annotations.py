@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .. import config, models, schemas, database, auth
 from ..calibre.library import CalibreLibrary
 from ..logging_utils import log_message
-from ..services import widowed_highlights
+from ..services import widowed_highlights, permessi
 from .libraries import NESSUNA_BIBLIOTECA_TUA, resolve_default_library_folder
 router = APIRouter(prefix="/api/kolibre/annotations", tags=["annotations"])
 
@@ -102,7 +102,7 @@ def _serialize_orphan(o: models.OrphanHighlight, device_names: dict = None) -> d
     }
 
 
-def _build_book_meta(highlights: list) -> dict:
+def _build_book_meta(highlights: list, db: Session, current_user: models.User) -> dict:
     """(library, calibre_book_id) -> {"title":..., "author":..., "formats": [...]},
     one CalibreLibrary.list_books() call per library touched, not per highlight."""
     by_library = defaultdict(list)
@@ -111,6 +111,11 @@ def _build_book_meta(highlights: list) -> dict:
 
     book_meta = {}
     for library in by_library:
+        # A person's old annotation must never open another user's private
+        # Calibre metadata, even if the annotation refers to its folder.
+        row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+        if row is None or not permessi.puo_leggere(db, current_user, row):
+            continue
         try:
             lib = CalibreLibrary(config.library_path(library))
             for b in lib.list_books():
@@ -132,12 +137,14 @@ def _build_book_meta(highlights: list) -> dict:
     return book_meta
 
 
-def _build_device_names(device_ids, db: Session) -> dict:
+def _build_device_names(device_ids, db: Session, user_id: int) -> dict:
     """device_id -> name, one query for every device actually referenced (not per highlight)."""
     device_ids = {d for d in device_ids if d is not None}
     if not device_ids:
         return {}
-    rows = db.query(models.Device.id, models.Device.name).filter(models.Device.id.in_(device_ids)).all()
+    rows = db.query(models.Device.id, models.Device.name).filter(
+        models.Device.id.in_(device_ids), models.Device.user_id == user_id,
+    ).all()
     return {device_id: name for device_id, name in rows}
 
 
@@ -177,9 +184,9 @@ def list_annotations(
     # and-parse work for up to 25 highlights, on the hot read path, until
     # the backlog finally cleared — and there is no need to convert them
     # all when a page opens: that only overloads the page).
-    book_meta = _build_book_meta(hls)
+    book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
-        [h.device_id for h in hls] + [o.device_id for o in orphans], db
+        [h.device_id for h in hls] + [o.device_id for o in orphans], db, current_user.id
     )
     return (
         [_serialize(h, book_meta, device_names) for h in hls]
@@ -215,9 +222,9 @@ def export_annotations(
         .order_by(models.OrphanHighlight.local_path, models.OrphanHighlight.page)
         .all()
     )
-    book_meta = _build_book_meta(hls)
+    book_meta = _build_book_meta(hls, db, current_user)
     device_names = _build_device_names(
-        [h.device_id for h in hls] + [o.device_id for o in orphans], db
+        [h.device_id for h in hls] + [o.device_id for o in orphans], db, current_user.id
     )
 
     results = []
@@ -278,6 +285,9 @@ def create_annotation(
     biblioteca = payload.library or resolve_default_library_folder(db, current_user)
     if not biblioteca:
         raise HTTPException(status_code=404, detail=NESSUNA_BIBLIOTECA_TUA)
+    row = db.query(models.Library).filter(models.Library.folder_name == biblioteca).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
     highlight = models.Highlight(
         user_id=current_user.id,
         library=biblioteca,
@@ -311,7 +321,7 @@ def update_orphan_annotation(
     if "color" in payload:
         o.color = payload["color"]
     db.commit()
-    return _serialize_orphan(o, _build_device_names([o.device_id], db))
+    return _serialize_orphan(o, _build_device_names([o.device_id], db, current_user.id))
 
 
 @router.delete("/orphans/{id}")
@@ -339,7 +349,7 @@ def restore_orphan_annotation(
     o = _get_owned_orphan(db, id, current_user)
     o.deleted_at = None
     db.commit()
-    return _serialize_orphan(o, _build_device_names([o.device_id], db))
+    return _serialize_orphan(o, _build_device_names([o.device_id], db, current_user.id))
 
 
 @router.post("/retry-failed-positions")
@@ -390,6 +400,9 @@ def suggest_widowed_annotations(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Quali libri presenti in biblioteca contengono il testo di queste note."""
+    row = db.query(models.Library).filter(models.Library.folder_name == library).first()
+    if row is None or not permessi.puo_leggere(db, current_user, row):
+        raise HTTPException(status_code=404, detail="Library not found")
     return widowed_highlights.suggest_books(db, library, calibre_book_id, user_id=current_user.id)
 
 
@@ -406,6 +419,9 @@ def repair_widowed_annotations(
     target_book_id = payload.get("target_book_id")
     if not library or book_id is None or target_book_id is None:
         raise HTTPException(status_code=400, detail="library, calibre_book_id e target_book_id sono obbligatori")
+    target_row = db.query(models.Library).filter(models.Library.folder_name == target_library).first()
+    if target_row is None or not permessi.puo_leggere(db, current_user, target_row):
+        raise HTTPException(status_code=404, detail="Library not found")
     spostate = widowed_highlights.repair(db, library, int(book_id), target_library, int(target_book_id), user_id=current_user.id)
     db.commit()
     log_message(
@@ -452,7 +468,7 @@ def update_annotation(
         h.cfi_end = payload.get("cfi_end") or payload["cfi_start"]
         h.position_status = "ritrovata_dal_testo"
     db.commit()
-    return _serialize(h, device_names=_build_device_names([h.device_id], db))
+    return _serialize(h, device_names=_build_device_names([h.device_id], db, current_user.id))
 
 
 @router.delete("/{id}")
@@ -488,4 +504,4 @@ def restore_annotation(
         raise HTTPException(status_code=404, detail="Annotazione non trovata")
     h.deleted_at = None
     db.commit()
-    return _serialize(h, device_names=_build_device_names([h.device_id], db))
+    return _serialize(h, device_names=_build_device_names([h.device_id], db, current_user.id))

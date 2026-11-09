@@ -1,7 +1,9 @@
 import { AlertTriangle, BookOpen, ExternalLink, Loader2, Pencil, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatBytes } from '@/lib/format'
 import { withBackendUrl } from '@/lib/api'
+import { ensureAuthToken } from '@/lib/auth'
 import type { IngestedBook } from '@/types/ingest'
 import type { Library } from '@/types/library'
 import { LibraryPickerButton } from '@/components/LibraryPickerButton'
@@ -39,14 +41,44 @@ export function IngestCard({
   duplicati,
 }: IngestCardProps) {
   const { t } = useLingua()
+  const [coverSrc, setCoverSrc] = useState<string | null>(null)
+
+  useEffect(() => {
+    const path = item.cover_url
+    if (!path) {
+      setCoverSrc(null)
+      return
+    }
+    let cancelled = false
+    let objectUrl: string | null = null
+    void (async () => {
+      try {
+        const token = await ensureAuthToken()
+        const response = await fetch(withBackendUrl(path), {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (!response.ok) return
+        const blob = await response.blob()
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setCoverSrc(objectUrl)
+      } catch {
+        if (!cancelled) setCoverSrc(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [item.cover_url])
   return (
     <div className="flex items-center gap-4 rounded-lg border border-border bg-card p-3">
       {/* Copertina reale solo per EPUB con cover-image nel manifest OPF
           (vedi services/metadata_parser.py) — placeholder generico altrimenti
           (PDF, o un EPUB senza copertina propria). */}
       <div className="flex aspect-[2/3] w-14 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-muted text-muted-foreground">
-        {item.cover_url ? (
-          <img src={withBackendUrl(item.cover_url)} alt="" loading="lazy" className="h-full w-full object-cover" />
+        {coverSrc ? (
+          <img src={coverSrc} alt="" loading="lazy" className="h-full w-full object-cover" />
         ) : (
           <BookOpen className="size-5" />
         )}
@@ -78,7 +110,11 @@ export function IngestCard({
 
         <div className="mt-1 flex items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground">{t('ingest.card.destinationLabel')}</span>
-          <LibraryPickerButton libraries={libraries} value={destLibrary} onChange={onChangeDestLibrary} size="sm" />
+          {item.isPrivate ? (
+            <span className="rounded border border-border px-1.5 py-0.5 text-xs">Private library (only you)</span>
+          ) : (
+            <LibraryPickerButton libraries={libraries.filter((lib) => lib.canUpload !== false)} value={destLibrary} onChange={onChangeDestLibrary} size="sm" />
+          )}
         </div>
       </div>
 

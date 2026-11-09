@@ -18,8 +18,9 @@ from ..calibre.functions import string_to_authors
 from ..calibre.connection import page_count_fields
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from ..services import app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, page_counter, opf_metadata, author_stats_service, stats_service
+from ..services import permessi, app_settings, fulltext_index, author_ingest_hook, book_hash_service, book_records, private_book_move, private_move_recovery, page_counter, opf_metadata, author_stats_service, stats_service
 from .libraries import sync_library_registry, _library_stats
+from ..services.ingest_access import ensure_private_library
 
 router = APIRouter(prefix="/api/kolibre/library-transfer", tags=["library-transfer"])
 
@@ -36,10 +37,22 @@ router = APIRouter(prefix="/api/kolibre/library-transfer", tags=["library-transf
 # rather than duplicated.
 
 
-def _require_library(folder: str) -> str:
-    library_path = config.library_path(folder)
+def _require_library(folder: str, db: Session, user: models.User, access: str = "read") -> str:
+    """No Calibre Desktop transfer operation can bypass library ownership."""
+    row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    granted = (
+        row is not None and (
+            permessi.puo_leggere(db, user, row) if access == "read"
+            else permessi.puo_caricare(db, user, row) if access == "upload"
+            else permessi.puo_modificare(db, user, row) if access == "edit"
+            else False
+        )
+    )
+    if not granted:
+        raise HTTPException(status_code=404, detail="Library not found")
+    library_path = config.library_path(row.folder_name)
     if not os.path.exists(os.path.join(library_path, "metadata.db")):
-        raise HTTPException(status_code=404, detail=f"Libreria '{folder}' non trovata sul server")
+        raise HTTPException(status_code=404, detail="Library not found")
     return library_path
 
 
@@ -92,6 +105,7 @@ def _apply_calibre_annotations(db: Session, user_id: int, folder: str, book_id: 
         existing = (
             db.query(models.Highlight)
             .filter(
+                models.Highlight.user_id == user_id,
                 models.Highlight.library == folder,
                 models.Highlight.calibre_book_id == book_id,
                 models.Highlight.annot_id == annot_id,
@@ -135,7 +149,7 @@ def list_transferable_libraries(
     /api/kolibre/devices/libraries (the KOReader-plugin equivalent).
     """
     sync_library_registry(db)
-    rows = db.query(models.Library).order_by(models.Library.id).all()
+    rows = permessi.biblioteche_visibili(db, current_user)
     result = []
     for row in rows:
         stats = _library_stats(row.folder_name)
@@ -163,7 +177,7 @@ def get_library_manifest(
     /api/kolibre/books/{id}/download and /cover endpoints — this endpoint is
     just the plan, not the payload.
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user)
     lib = CalibreLibrary(library_path)
     row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
     display_name = row.name if row else folder
@@ -220,9 +234,10 @@ def get_library_manifest(
 @router.get("/{folder}/fulltext-db")
 def download_library_fulltext_db(
     folder: str,
+    db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user)
     fulltext_path = os.path.join(library_path, fulltext_index.FULLTEXT_DB_FILENAME)
     if not os.path.exists(fulltext_path):
         raise HTTPException(status_code=404, detail="Nessun indice full-text per questa libreria")
@@ -243,7 +258,7 @@ async def upload_library_fulltext_db(
     it's actually a SQLite db with the expected fts_meta table, so a
     malformed/foreign file can't silently replace a library's working index.
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user, access="edit")
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Corpo della richiesta vuoto")
@@ -303,7 +318,7 @@ async def upload_library_book(
     to begin with, so it wasn't the reported bug, but it's the identical fix
     if/when that flow needs it too).
     """
-    library_path = _require_library(folder)
+    library_path = _require_library(folder, db, current_user, access="upload")
 
     try:
         meta = json.loads(metadata)
@@ -464,7 +479,10 @@ async def _completa_caricamento(
         _apply_calibre_annotations(db, current_user.id, folder, book_id, meta["calibre_annotations"])
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+    # Private book metadata must not be sent to the global author scraper.
+    destination_row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if destination_row is not None and not destination_row.is_private:
+        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
     return {"status": "ok", "book_id": book_id, "formats": saved_formats}
 
 
@@ -499,94 +517,199 @@ async def copy_book_to_library(
     ride along that way (it's Kolibre's own app.db table, not a Calibre
     column) — computed explicitly below, same as every other book-add path.
     """
-    source_path = _require_library(folder)
-    target_folder = (payload.get("target_folder") or "").strip()
+    make_private = payload.get("make_private") is True
+    delete_source = make_private or bool(payload.get("delete_source"))
+    source_path = _require_library(
+        folder, db, current_user, access="edit" if delete_source else "read"
+    )
+    source_row = db.query(models.Library).filter(models.Library.folder_name == folder).first()
+    if make_private:
+        if source_row is None or source_row.is_private:
+            raise HTTPException(status_code=409, detail="Only shared books can be made private")
+        # Verify the original exists before creating a new personal Calibre DB.
+        source_books = CalibreLibrary(source_path).list_books()
+        if not any(book["id"] == book_id for book in source_books):
+            raise HTTPException(status_code=404, detail="Book not found")
+        target_folder = ensure_private_library(db, current_user).folder_name
+    else:
+        target_folder = (payload.get("target_folder") or "").strip()
     if not target_folder:
         raise HTTPException(status_code=400, detail="target_folder è obbligatorio")
     if target_folder == folder:
         raise HTTPException(status_code=400, detail="La libreria di destinazione deve essere diversa dall'origine")
-    target_path = _require_library(target_folder)
-    delete_source = bool(payload.get("delete_source"))
+    target_path = _require_library(target_folder, db, current_user, access="upload")
+    target_row = db.query(models.Library).filter(models.Library.folder_name == target_folder).first()
+    if delete_source and target_row.is_private and not make_private:
+        # The old general-purpose move migrated EVERY user's personal state.
+        # Private moves MUST use the special owner-only migration below.
+        raise HTTPException(status_code=409, detail="Use make_private for private moves")
 
     source_lib = CalibreLibrary(source_path)
     book = next((b for b in source_lib.list_books() if b["id"] == book_id), None)
     if not book:
         raise HTTPException(status_code=404, detail="Libro non trovato nella libreria di origine")
 
+    if make_private and not book["formats"]:
+        raise HTTPException(status_code=409, detail="Book has no formats to make private")
     title = book["title"]
     author = book["author"] or "Autore Sconosciuto"
-    new_book_id = await write_queue.submit("insert_book", {"title": title, "author": author}, target_path)
-    # Come sopra: cartella e nomi nella forma di Calibre. L'id e' quello
-    # NUOVO, della biblioteca di destinazione.
-    target_dir_rel = calibre_naming.percorso_per_libro(new_book_id, title, author)
-    target_dir_abs = os.path.join(target_path, target_dir_rel)
-    os.makedirs(target_dir_abs, exist_ok=True)
-    nome_file = calibre_naming.construct_file_name(
-        title, calibre_naming.autore_di_cartella(author),
-        calibre_naming.lunghezza_estensione(book["formats"]),
-    )
+    # An active-key uniqueness constraint prevents concurrent private moves
+    # of the same source book (including after an interrupted request).
+    move = private_move_recovery.begin(
+        db, current_user.id, folder, book_id, target_folder
+    ) if make_private else None
 
-    saved_formats = []
-    for fmt in book["formats"]:
-        src_file = source_lib.get_format_file_path(book_id, fmt)
-        if not src_file:
-            continue
-        base_name = nome_file
-        dest_file = os.path.join(target_dir_abs, f"{base_name}.{fmt.lower()}")
-        shutil.copyfile(src_file, dest_file)
-        await write_queue.submit(
-            "add_format",
-            {"book_id": new_book_id, "fmt": fmt, "size_bytes": os.path.getsize(dest_file), "name": base_name},
+    async def queue_write(operation, payload, library_path):
+        return await write_queue.submit(
+            operation, payload, library_path,
+            _skip_persist_on_failure=bool(move),
+        )
+
+    try:
+        new_book_id = await queue_write(
+            "insert_book",
+            {"title": title, "author": author, **({"private_move_token": move.token} if move else {})},
             target_path,
         )
-        book_hash_service.upsert_book_hash(db, target_folder, new_book_id, fmt, dest_file)
-        saved_formats.append(fmt)
-    db.commit()
-
-    fields = {"path": target_dir_rel}
-    if book.get("series_index") is not None:
-        fields["series_index"] = book["series_index"]
-    for key, value in book.items():
-        if key.startswith("#"):
-            fields[key] = value
-    await write_queue.submit("update_book", {"book_id": new_book_id, "fields": fields}, target_path)
-
-    if book.get("identifiers"):
-        for id_type, value in book["identifiers"].items():
-            await write_queue.submit(
-                "set_identifier", {"book_id": new_book_id, "id_type": id_type, "value": value}, target_path
-            )
-    if book.get("publisher"):
-        await write_queue.submit("set_publisher", {"book_id": new_book_id, "name": book["publisher"]}, target_path)
-    if book.get("tags"):
-        await write_queue.submit("set_book_tags", {"book_id": new_book_id, "tags": book["tags"]}, target_path)
-    if book.get("series"):
-        await write_queue.submit(
-            "set_book_series", {"book_id": new_book_id, "series_name": book["series"]}, target_path
+        if move:
+            private_move_recovery.checkpoint(db, move, "copying", target_id=new_book_id)
+        # Come sopra: cartella e nomi nella forma di Calibre. L'id e' quello
+        # NUOVO, della biblioteca di destinazione.
+        target_dir_rel = calibre_naming.percorso_per_libro(new_book_id, title, author)
+        target_dir_abs = os.path.join(target_path, target_dir_rel)
+        os.makedirs(target_dir_abs, exist_ok=True)
+        nome_file = calibre_naming.construct_file_name(
+            title, calibre_naming.autore_di_cartella(author),
+            calibre_naming.lunghezza_estensione(book["formats"]),
         )
-    if book.get("description"):
-        await write_queue.submit("set_comments", {"book_id": new_book_id, "text": book["description"]}, target_path)
 
-    cover_src = book.get("cover_path")
-    if cover_src and os.path.exists(cover_src):
-        with open(cover_src, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("ascii")
-        await write_queue.submit("set_cover", {"book_id": new_book_id, "image_b64": image_b64}, target_path)
-
-    if delete_source:
-        await write_queue.submit("delete_book", {"book_id": book_id}, source_path)
-        # "Copia ed elimina l'originale" is a MOVE, so the reading history
-        # moves with the book instead of being orphaned on an id that no
-        # longer resolves — which is what used to happen: progress, sessions
-        # and highlights stayed pinned to the source library forever, and no
-        # device was ever told to drop its copy. See book_records.
-        book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
+        saved_formats = []
+        for fmt in book["formats"]:
+            src_file = source_lib.get_format_file_path(book_id, fmt)
+            if not src_file:
+                continue
+            base_name = nome_file
+            dest_file = os.path.join(target_dir_abs, f"{base_name}.{fmt.lower()}")
+            shutil.copyfile(src_file, dest_file)
+            await queue_write(
+                "add_format",
+                {"book_id": new_book_id, "fmt": fmt, "size_bytes": os.path.getsize(dest_file), "name": base_name},
+                target_path,
+            )
+            book_hash_service.upsert_book_hash(db, target_folder, new_book_id, fmt, dest_file)
+            saved_formats.append(fmt)
         db.commit()
 
-    author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
-    log_message(
-        "info", "library-transfer",
-        f"Copiato libro '{title}' da '{folder}' a '{target_folder}'" + (" (eliminato dall'origine)" if delete_source else ""),
-    )
-    return {"status": "ok", "book_id": new_book_id, "formats": saved_formats}
+        if make_private and len(saved_formats) != len(book["formats"]):
+            # Keep the shared source intact; a partial private copy is not a move.
+            raise HTTPException(status_code=409, detail="Failed to copy every book format")
+
+        fields = {"path": target_dir_rel}
+        if book.get("series_index") is not None:
+            fields["series_index"] = book["series_index"]
+        for key, value in book.items():
+            if key.startswith("#"):
+                fields[key] = value
+        await queue_write("update_book", {"book_id": new_book_id, "fields": fields}, target_path)
+
+        if book.get("identifiers"):
+            for id_type, value in book["identifiers"].items():
+                # A recovery token belongs to one particular copy operation,
+                # never to copies of that book in other libraries.
+                if id_type == "kolibre-private-move":
+                    continue
+                await queue_write(
+                    "set_identifier", {"book_id": new_book_id, "id_type": id_type, "value": value}, target_path
+                )
+        if book.get("publisher"):
+            await queue_write("set_publisher", {"book_id": new_book_id, "name": book["publisher"]}, target_path)
+        if book.get("tags"):
+            await queue_write("set_book_tags", {"book_id": new_book_id, "tags": book["tags"]}, target_path)
+        if book.get("series"):
+            await queue_write(
+                "set_book_series", {"book_id": new_book_id, "series_name": book["series"]}, target_path
+            )
+        if book.get("description"):
+            await queue_write("set_comments", {"book_id": new_book_id, "text": book["description"]}, target_path)
+
+        cover_src = book.get("cover_path")
+        if cover_src and os.path.exists(cover_src):
+            with open(cover_src, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("ascii")
+            await queue_write("set_cover", {"book_id": new_book_id, "image_b64": image_b64}, target_path)
+
+        if move:
+            private_move_recovery.checkpoint(db, move, "ready")
+
+        if delete_source:
+            if move:
+                # This is the irreversible cross-database boundary. The move
+                # journal and its target token are durable BEFORE deleting source.
+                await queue_write("delete_book", {"book_id": book_id}, source_path)
+                private_move_recovery.checkpoint(db, move, "source_deleted")
+                private_book_move.migrate_owner_records(
+                    db, folder, book_id, target_folder, new_book_id, current_user.id
+                )
+                private_move_recovery.checkpoint(db, move, "completed")
+            else:
+                await queue_write("delete_book", {"book_id": book_id}, source_path)
+                book_records.release_book(db, folder, book_id, migrate_to=(target_folder, new_book_id))
+                db.commit()
+
+        author_stats_service.safe_mark_author_pages_dirty(db)
+        if not move and not target_row.is_private:
+            author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+        if move:
+            # An administrator may read application logs. Never log private titles.
+            log_message("info", "library-transfer", f"Private move completed (operation {move.id})")
+        else:
+            log_message(
+                "info", "library-transfer",
+                f"Copiato libro '{title}' da '{folder}' a '{target_folder}'" + (" (eliminato dall'origine)" if delete_source else ""),
+            )
+        return {"status": "ok", "book_id": new_book_id, "formats": saved_formats,
+                "target_folder": target_folder, "made_private": make_private}
+
+    except Exception:
+        if move:
+            db.rollback()
+            # Determine the actual Calibre state instead of assuming the
+            # failing operation did or did not commit. Never schedule
+            # delayed destructive retries through pending_calibre_writes.
+            try:
+                await private_move_recovery.reconcile(db, move, write_queue)
+            except Exception:
+                db.rollback()
+                move.state = "needs_review"
+                move.failure_code = "reconciliation_failed"
+                db.commit()
+        raise
+
+
+@router.get("/private-moves")
+def list_my_private_moves(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
+    """Owner-only move history; never exposes book titles or internal tokens."""
+    moves = db.query(models.PrivateBookMove).filter(
+        models.PrivateBookMove.owner_id == current_user.id,
+    ).order_by(models.PrivateBookMove.id.desc()).limit(50).all()
+    return [private_move_recovery.serialize_move(row) for row in moves]
+
+
+@router.post("/private-moves/{move_id}/recover")
+async def recover_my_private_move(
+    move_id: int,
+    db: Session = Depends(database.get_db),
+    write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
+    """Recover an interrupted move without admin access to private records."""
+    from datetime import timedelta
+    move = private_move_recovery.private_move_for_user(db, move_id, current_user.id)
+    if move.state in ("copying", "ready", "source_deleted"):
+        # Avoid a second HTTP request undoing a currently active move.
+        if move.updated_at and datetime.utcnow() - move.updated_at < timedelta(minutes=2):
+            raise HTTPException(status_code=409, detail="Move may still be running")
+    return await private_move_recovery.reconcile(db, move, write_queue)

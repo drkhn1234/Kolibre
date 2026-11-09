@@ -20,6 +20,11 @@ import {
   setLibraryFulltextEnabled,
 } from '@/lib/librarySettingsActions'
 import { useLingua, type Valori } from '@/lib/i18n'
+import {
+  useLibraryPermissions, usePermissionTargets,
+  saveLibraryPermission, revokeLibraryPermission,
+  type LibraryPermissionRow,
+} from '@/lib/libraryPermissionsActions'
 
 interface LibraryEditDialogProps {
   library: Library
@@ -171,6 +176,9 @@ export function LibraryEditDialog({ library, onClose }: LibraryEditDialogProps) 
         <Tabs defaultValue="general">
           <TabsList>
             <TabsTrigger value="general">{t('settings.library.edit.tabs.general')}</TabsTrigger>
+            {library.canShare && !library.isPrivate && (
+              <TabsTrigger value="access">Access</TabsTrigger>
+            )}
             <TabsTrigger value="columns">{t('settings.library.edit.tabs.columns')}</TabsTrigger>
             <TabsTrigger value="quickview">{t('settings.library.edit.tabs.quickview')}</TabsTrigger>
           </TabsList>
@@ -251,6 +259,12 @@ export function LibraryEditDialog({ library, onClose }: LibraryEditDialogProps) 
               )}
             </div>
           </TabsContent>
+
+          {library.canShare && !library.isPrivate && (
+            <TabsContent value="access" className="pt-2">
+              <LibraryAccessSection library={library} />
+            </TabsContent>
+          )}
 
           <TabsContent value="columns" className="flex flex-col gap-3 pt-2">
             {columnsLoading && <p className="text-[12.5px] text-muted-foreground">{t('common.loading')}</p>}
@@ -368,6 +382,153 @@ export function LibraryEditDialog({ library, onClose }: LibraryEditDialogProps) 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+
+/** Grants are independent: Upload does not imply Edit/Delete.
+ * The server is the final authority for delegated grants and revocation.
+ */
+function LibraryAccessSection({ library }: { library: Library }) {
+  const queryClient = useQueryClient()
+  const { data: overview, isLoading, error: loadError } = useLibraryPermissions(library.folder_name, true)
+  const { data: users = [] } = usePermissionTargets(true)
+  const [selectedId, setSelectedId] = useState('')
+  const [drafts, setDrafts] = useState<Record<number, LibraryPermissionRow>>({})
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const existing = overview?.condivisioni ?? []
+  const available = users.filter((user) =>
+    user.id !== overview?.owner_id && !existing.some((row) => row.user_id === user.id)
+  )
+
+  async function refresh() {
+    await queryClient.invalidateQueries({ queryKey: ['library-permissions', library.folder_name] })
+    await queryClient.invalidateQueries({ queryKey: ['libraries'] })
+  }
+
+  async function save(row: LibraryPermissionRow) {
+    setBusyId(row.user_id)
+    setMessage(null)
+    try {
+      await saveLibraryPermission(library.folder_name, row)
+      await refresh()
+      setDrafts((current) => {
+        const next = { ...current }
+        delete next[row.user_id]
+        return next
+      })
+      setSelectedId('')
+    } catch (err) {
+      setMessage(errorDetail(err, 'Unable to save library permissions'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function revoke(userId: number) {
+    if (!window.confirm('Remove this user’s access to the library?')) return
+    setBusyId(userId)
+    setMessage(null)
+    try {
+      await revokeLibraryPermission(library.folder_name, userId)
+      await refresh()
+    } catch (err) {
+      setMessage(errorDetail(err, 'Unable to revoke access'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  function permissionControls(row: LibraryPermissionRow, onChange: (row: LibraryPermissionRow) => void) {
+    return (
+      <div className="flex flex-wrap gap-x-4 gap-y-2">
+        {([
+          ['can_upload', 'Upload books'],
+          ['can_edit', 'Edit and delete books'],
+          ['can_share', 'Share with others'],
+          ['can_manage', 'Manage permissions'],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-1.5 text-[12px]">
+            <input
+              type="checkbox"
+              checked={row[key]}
+              disabled={busyId !== null || (!overview?.puoi_gestire && key === 'can_manage')}
+              onChange={(event) => onChange({ ...row, [key]: event.target.checked })}
+              className="size-4 accent-primary"
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+    )
+  }
+
+  if (isLoading) return <p className="text-[12px] text-muted-foreground">Loading access permissions…</p>
+  if (loadError || !overview) return (
+    <p className="text-[12px] text-destructive">{errorDetail(loadError, 'Unable to load access permissions')}</p>
+  )
+
+  return (
+    <div className="flex flex-col gap-3 text-[12.5px]">
+      <p className="text-muted-foreground">
+        Upload permission lets someone contribute books without allowing them to edit,
+        delete, move, or make existing shared books private.
+      </p>
+      <p className="text-muted-foreground">Owner: {overview.owner ?? 'Unassigned'}</p>
+      {existing.map((original) => {
+        const row = drafts[original.user_id] ?? original
+        return (
+          <div key={original.user_id} className="rounded-md border border-border p-3">
+            <p className="mb-2 font-medium">{row.username}</p>
+            {permissionControls(row, (next) => setDrafts((prev) => ({ ...prev, [row.user_id]: next })))}
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" disabled={busyId !== null || !drafts[row.user_id]} onClick={() => void save(row)}>
+                {busyId === row.user_id && <Loader2 className="size-3 animate-spin" />}
+                Save permissions
+              </Button>
+              {overview.puoi_gestire && (
+                <Button variant="outline" size="sm" disabled={busyId !== null} onClick={() => void revoke(row.user_id)}>
+                  Revoke access
+                </Button>
+              )}
+            </div>
+          </div>
+        )
+      })}
+      {available.length > 0 && (
+        <div className="rounded-md border border-border p-3">
+          <p className="mb-2 font-medium">Grant access</p>
+          <Select value={selectedId} onValueChange={setSelectedId}>
+            <SelectTrigger><SelectValue placeholder="Select a user" /></SelectTrigger>
+            <SelectContent>
+              {available.map((user) => (
+                <SelectItem key={user.id} value={String(user.id)}>{user.username}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {selectedId && (() => {
+            const user = available.find((candidate) => String(candidate.id) === selectedId)
+            if (!user) return null
+            const draft = drafts[user.id] ?? {
+              user_id: user.id, username: user.username,
+              can_upload: true, can_edit: false, can_share: false, can_manage: false,
+            }
+            return (
+              <div className="mt-3 flex flex-col gap-3">
+                {permissionControls(draft, (next) => setDrafts((prev) => ({ ...prev, [user.id]: next })))}
+                <Button size="sm" disabled={busyId !== null} onClick={() => void save(draft)}>
+                  {busyId === user.id && <Loader2 className="size-3 animate-spin" />}
+                  Grant access
+                </Button>
+              </div>
+            )
+          })()}
+        </div>
+      )}
+      {message && <p role="alert" className="text-destructive">{message}</p>}
+    </div>
   )
 }
 

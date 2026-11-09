@@ -7,6 +7,7 @@ import {
   Download,
   FolderInput,
   Layers,
+  LockKeyhole,
   ListTree,
   Pencil,
   RefreshCw,
@@ -33,7 +34,7 @@ import {
 import type { Book, Library } from '@/types/library'
 import type { Device } from '@/types/device'
 import { useBookActions } from '@/lib/bookActionsContext'
-import { copyBookToLibrary } from '@/lib/bookActions'
+import { copyBookToLibrary, makeBookPrivate } from '@/lib/bookActions'
 import { queueBookForDevice, deviceErrorDetail } from '@/lib/deviceActions'
 import { deviceBookColumnState, pickPreferredDeviceFormat } from '@/lib/deviceFormat'
 import { splitAuthorNames } from '@/lib/authorNames'
@@ -77,7 +78,8 @@ export function BookContextMenu({ book, children }: BookContextMenuProps) {
   const queryClient = useQueryClient()
   const folder = actions.resolveFolder(book)
   const libraries = queryClient.getQueryData<Library[]>(['libraries']) ?? []
-  const otherLibraries = libraries.filter((l) => l.name !== book._library)
+  const sourceLibrary = libraries.find((lib) => lib.folder_name === folder)
+  const otherLibraries = libraries.filter((lib) => lib.folder_name !== folder && lib.canUpload !== false)
 
   // Stessa disciplina delle librerie sopra: si legge la cache di useDevices()
   // (già popolata da chi ha davvero bisogno di reattività, es. la pagina
@@ -109,6 +111,22 @@ export function BookContextMenu({ book, children }: BookContextMenuProps) {
     }
     invalidaViste(queryClient, targetFolder)
     if (deleteSource) invalidaViste(queryClient, folder)
+  }
+
+  async function handleMakePrivate() {
+    if (!folder) return
+    if (!window.confirm(
+      `Move "${book.title}" out of the shared library into your private library? Other users will no longer see it in Kolibre, but previously downloaded copies are not removed.`
+    )) return
+    try {
+      const result = await makeBookPrivate(folder, book.id)
+      invalidaViste(queryClient, folder)
+      invalidaViste(queryClient, result.target_folder)
+      void queryClient.invalidateQueries({ queryKey: ['libraries'] })
+      void queryClient.invalidateQueries({ queryKey: ['devices'] })
+    } catch (e) {
+      toast.error(errorDetail(e, 'Could not make this book private'))
+    }
   }
 
   async function handleSendToDevice(device: Device) {
@@ -231,13 +249,21 @@ export function BookContextMenu({ book, children }: BookContextMenuProps) {
                   <ContextMenuItem onSelect={() => handleCopy(lib.folder_name, false)}>
                     <Copy /> {t('library.contextMenu.copyInto', { name: lib.name })}
                   </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => handleCopy(lib.folder_name, true)} variant="destructive">
-                    <Scissors /> {t('library.contextMenu.copyAndDeleteOrigin')}
-                  </ContextMenuItem>
+                  {!lib.isPrivate && (
+                    <ContextMenuItem onSelect={() => handleCopy(lib.folder_name, true)} variant="destructive">
+                      <Scissors /> {t('library.contextMenu.copyAndDeleteOrigin')}
+                    </ContextMenuItem>
+                  )}
                 </Fragment>
               ))}
             </ContextMenuSubContent>
           </ContextMenuSub>
+        )}
+
+        {sourceLibrary && !sourceLibrary.isPrivate && sourceLibrary.canEdit === true && (
+          <ContextMenuItem onSelect={() => { void handleMakePrivate() }}>
+            <LockKeyhole /> Make private
+          </ContextMenuItem>
         )}
 
         {sendTargets.length > 0 && (

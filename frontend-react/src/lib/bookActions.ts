@@ -177,6 +177,18 @@ export async function copyBookToLibrary(
   return data as unknown as { book_id: number; formats: string[] }
 }
 
+/** Move a shared book into the logged-in user's private Calibre library.
+ * The backend chooses the destination; client-supplied private paths aren't trusted.
+ */
+export async function makeBookPrivate(sourceFolder: string, bookId: number): Promise<{ book_id: number; target_folder: string }> {
+  const { data, error } = await api.POST('/api/kolibre/library-transfer/{folder}/books/{book_id}/copy-to', {
+    params: { path: { folder: sourceFolder, book_id: bookId } },
+    body: { make_private: true },
+  })
+  if (error) throw error
+  return data as unknown as { book_id: number; target_folder: string }
+}
+
 export async function saveBookToc(library: string, bookId: number, format: string, entries: TocEntry[]): Promise<void> {
   const { error } = await api.POST('/api/kolibre/books/{id}/toc', {
     params: { path: { id: bookId }, query: { library } },

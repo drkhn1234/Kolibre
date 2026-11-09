@@ -47,4 +47,16 @@ def ensure_directories() -> None:
 
 
 def library_path(name: str) -> str:
+    """Only registered single-component folder slugs may enter this path.
+
+    A library named '../private_<other user>' or an absolute path must not
+    escape LIBRARIES_DIR, including when passed from an API operation.
+    External Calibre roots are registered through explicit zero-copy imports,
+    not passed as folder names to this helper.
+    """
+    if (
+        not isinstance(name, str) or not name or name in (".", "..")
+        or os.path.isabs(name) or "/" in name or "\\" in name or "\x00" in name
+    ):
+        raise ValueError("Invalid Calibre library folder name")
     return os.path.join(LIBRARIES_DIR, name)

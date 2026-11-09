@@ -1,11 +1,12 @@
 import base64
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -14,13 +15,14 @@ from ..logging_utils import log_message
 from ..services import duplicates, page_counter, app_settings, book_hash_service, opf_metadata, author_ingest_hook, author_stats_service, stats_service, ingest_import_job
 from ..services.library_scanner import EBOOK_EXTENSIONS
 from ..services.watcher import stage_ingest_file
+from ..services.ingest_access import visible_ingest_query, get_accessible_ingest, require_ingest_destination
 from ..calibre import calibre_naming
 from ..calibre.library import CalibreLibrary
 from ..calibre.connection import page_count_fields
 from ..calibre.functions import string_to_authors
 from ..calibre.write_queue import CalibreWriteQueue
 from ..deps import get_write_queue
-from .libraries import resolve_folder_name, resolve_default_library_folder
+from .libraries import resolve_folder_name, resolve_default_library_folder, default_library_param
 
 router = APIRouter(prefix="/api/kolibre/ingest", tags=["ingest"])
 
@@ -44,10 +46,11 @@ def _serialize_ingest_item(item: models.IngestedBook) -> dict:
     return {
         "id": item.id,
         "title": item.title,
+        "isPrivate": bool(item.is_private),
         "author": item.author or "Autore Sconosciuto",
         "formats": [item.file_format],
         "size": item.file_size_bytes or 0,
-        "path": item.file_path,
+        "path": item.filename,  # No server filesystem paths in API responses
         "date_added": item.detected_at.strftime('%Y-%m-%d'),
         "cover_url": f"/api/kolibre/ingest/{item.id}/cover" if item.cover_path else None,
         "description": item.description or "",
@@ -104,6 +107,7 @@ def list_ingest_books(
     db: Session = Depends(database.get_db),
     limit: int = None,
     offset: int = 0,
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Senza `limit` restituisce tutto, come sempre. Con `limit` una pagina —
@@ -114,11 +118,9 @@ def list_ingest_books(
     metadati, e a qualche migliaio diventa una pagina che non si apre.
     """
     _scan_ingest_folder(db)
-    q = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .order_by(models.IngestedBook.id)
-    )
+    q = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).order_by(models.IngestedBook.id)
     if limit is None:
         return [_serialize_ingest_item(item) for item in q.all()]
     totale = q.count()
@@ -136,6 +138,7 @@ async def start_ingest_import_job(
     payload: dict,
     request: Request,
     db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Avvia l'importazione in blocco SUL SERVER. Il browser puo' andarsene.
@@ -159,40 +162,54 @@ async def start_ingest_import_job(
     ids = payload.get("ids")
     if ids is None:
         ids = [
-            r[0] for r in db.query(models.IngestedBook.id)
+            row[0] for row in visible_ingest_query(db, current_user)
             .filter(models.IngestedBook.status == "pending")
-            .order_by(models.IngestedBook.id).all()
+            .order_by(models.IngestedBook.id)
+            .with_entities(models.IngestedBook.id).all()
         ]
-    voci = [(int(i), per_item.get(str(i)) or generale) for i in ids]
+    if not isinstance(ids, list) or len(ids) > 10000:
+        raise HTTPException(status_code=400, detail="Invalid import ID list")
+    voci = []
+    for raw_id in ids:
+        try:
+            ingest_id = int(raw_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid staged book ID")
+        item = get_accessible_ingest(db, current_user, ingest_id)
+        if item.status != "pending":
+            raise HTTPException(status_code=409, detail="Staged item is not pending")
+        destination = require_ingest_destination(db, current_user, item, per_item.get(str(ingest_id)) or generale)
+        voci.append((ingest_id, destination))
     if not voci:
         raise HTTPException(status_code=400, detail="Nessun libro da importare")
-    if not ingest_import_job.start(voci, request.app.state.write_queue):
+    if not ingest_import_job.start(voci, request.app.state.write_queue, current_user.id):
         raise HTTPException(status_code=409, detail="Un'importazione in blocco è già in corso")
     log_message("info", "ingest", f"Importazione in blocco avviata: {len(voci)} libri")
     return {"status": "started", "total": len(voci)}
 
 
 @router.get("/import-job")
-def get_ingest_import_job():
+def get_ingest_import_job(current_user: models.User = Depends(auth.get_current_user_flexible)):
     """Stato dell'importazione in blocco. Interrogabile da qualunque pagina."""
-    return ingest_import_job.status()
+    return ingest_import_job.status(current_user.id)
 
 
 @router.post("/import-job/stop")
-def stop_ingest_import_job():
+def stop_ingest_import_job(current_user: models.User = Depends(auth.get_current_user_flexible)):
     """Ferma dopo il libro in corso. Quelli gia' importati restano importati."""
-    return {"stopping": ingest_import_job.stop()}
+    return {"stopping": ingest_import_job.stop(current_user.id)}
 
 
 @router.get("/pagination")
-def get_ingest_pagination(db: Session = Depends(database.get_db)):
+def get_ingest_pagination(
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
     """Se la pagina Ingest va impaginata, e con che pagina. Conta e basta."""
     _scan_ingest_folder(db)
-    totale = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .count()
-    )
+    totale = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).count()
     conf = app_settings.get_ingest_pagination(db)
     return {
         "total": totale,
@@ -205,8 +222,9 @@ def get_ingest_pagination(db: Session = Depends(database.get_db)):
 
 @router.get("/duplicati")
 def ingest_duplicati(
-    library: str = None,
+    library: str = Depends(default_library_param),
     db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
     """
     Quali file in attesa somigliano a qualcosa che in biblioteca c'e' gia'.
@@ -229,12 +247,10 @@ def ingest_duplicati(
     l'ha uguale: sul secondo caso l'hash aiuta, sul primo no, ed e' il primo
     quello che si vuole vedere prima di importare.
     """
-    folder = resolve_folder_name(db, library) if library else resolve_default_library_folder(db)
-    in_attesa = (
-        db.query(models.IngestedBook)
-        .filter(models.IngestedBook.status == "pending")
-        .all()
-    )
+    folder = resolve_folder_name(db, library)
+    in_attesa = visible_ingest_query(db, current_user).filter(
+        models.IngestedBook.status == "pending"
+    ).all()
     if not in_attesa:
         return {"library": folder, "duplicati": {}}
 
@@ -300,22 +316,25 @@ def get_ingest_file(
     yet, so unlike that endpoint this one is looked up directly by the
     IngestedBook row's own id, straight off disk from its file_path.
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item or not os.path.exists(item.file_path):
+    item = get_accessible_ingest(db, current_user, id)
+    if not os.path.exists(item.file_path):
         raise HTTPException(status_code=404, detail="File non trovato in ingest")
     ext = os.path.splitext(item.file_path)[1].lower()
     media_type = _INGEST_MIME_TYPES.get(ext, "application/octet-stream")
     return FileResponse(item.file_path, filename=item.filename, media_type=media_type)
 
 
-@public_router.get("/{id}/cover", dependencies=[Depends(auth.utente_o_dispositivo)])
-def get_ingest_cover(id: int, db: Session = Depends(database.get_db)):
+@public_router.get("/{id}/cover")
+def get_ingest_cover(
+    id: int, db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.utente_o_dispositivo),
+):
     """
     Serves the cover image extracted at staging time (metadata_parser.py,
     only ever populated for EPUB — see that module for why PDF has none).
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item or not item.cover_path or not os.path.exists(item.cover_path):
+    item = get_accessible_ingest(db, current_user, id)
+    if not item.cover_path or not os.path.exists(item.cover_path):
         raise HTTPException(status_code=404, detail="Copertina non disponibile")
     ext = os.path.splitext(item.cover_path)[1].lower()
     media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif"}.get(
@@ -325,7 +344,10 @@ def get_ingest_cover(id: int, db: Session = Depends(database.get_db)):
 
 
 @router.delete("/{id}")
-def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
+def discard_ingest_item(
+    id: int, db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
+):
     """
     "Scarta" reale per una riga di staging, singola: a differenza del vecchio
     comportamento solo-frontend (svuotava l'elenco in memoria, ma il file
@@ -336,9 +358,7 @@ def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
     staging, a differenza delle librerie vere (vedi settings.py's cestino
     librerie).
     """
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Elemento di ingest non trovato")
+    item = get_accessible_ingest(db, current_user, id)
     if item.status != "pending":
         raise HTTPException(status_code=409, detail="Elemento di ingest già in importazione o non più disponibile")
 
@@ -346,7 +366,10 @@ def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
         try:
             os.remove(item.file_path)
         except OSError as e:
-            log_message("warning", "ingest", f"Rimozione file staging fallita per '{item.file_path}': {e}")
+            if item.is_private:
+                log_message("warning", "ingest", "Private staged file removal failed")
+            else:
+                log_message("warning", "ingest", f"Rimozione file staging fallita per '{item.file_path}': {e}")
     if item.cover_path and os.path.exists(item.cover_path):
         try:
             os.remove(item.cover_path)
@@ -356,11 +379,14 @@ def discard_ingest_item(id: int, db: Session = Depends(database.get_db)):
     title = item.title
     db.delete(item)
     db.commit()
-    log_message("info", "ingest", f"Scartato dallo staging: '{title}' (file eliminato)")
+    if item.is_private:
+        log_message("info", "ingest", "Private staging item discarded")
+    else:
+        log_message("info", "ingest", f"Scartato dallo staging: '{title}' (file eliminato)")
     return {"status": "ok"}
 
 
-def _open_ingest_destination(filename: str):
+def _open_ingest_destination(filename: str, destination_dir: str | None = None):
     """
     Returns an (open binary file handle, absolute path) pair for a new file in
     the ingest folder. Uses exclusive creation ("xb") in a retry loop so two
@@ -371,7 +397,7 @@ def _open_ingest_destination(filename: str):
     candidate = filename
     counter = 2
     while True:
-        dest_path = os.path.join(config.INGEST_DIR, candidate)
+        dest_path = os.path.join(destination_dir or config.INGEST_DIR, candidate)
         try:
             return open(dest_path, "xb"), dest_path
         except FileExistsError:
@@ -382,6 +408,7 @@ def _open_ingest_destination(filename: str):
 @router.post("/upload")
 async def upload_ingest_files(
     files: List[UploadFile] = File(...),
+    visibility: str = Form("shared"),
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
@@ -395,7 +422,16 @@ async def upload_ingest_files(
     (services/library_scanner.EBOOK_EXTENSIONS); the watcher itself stages any
     non-hidden file, so this is the stricter, user-facing gate.
     """
-    os.makedirs(config.INGEST_DIR, exist_ok=True)
+    if visibility not in ("shared", "private"):
+        raise HTTPException(status_code=400, detail="Invalid visibility (shared/private)")
+    # Store web uploads outside the watched root; the watcher is non-recursive.
+    # Ownership is attached synchronously by the HTTP request, without races.
+    upload_dir = os.path.join(config.INGEST_DIR, "_web_uploads", str(current_user.id))
+    os.makedirs(upload_dir, exist_ok=True)
+    # Imported staging records retain file_path after their files are moved.
+    # Reusing that path would select the old record (and its old privacy
+    # decision). Give each request a fresh namespace, preserving filenames.
+    upload_dir = tempfile.mkdtemp(prefix="upload-", dir=upload_dir)
     staged = []
     rejected = []
 
@@ -415,7 +451,7 @@ async def upload_ingest_files(
             })
             continue
 
-        out_handle, dest_path = _open_ingest_destination(original_name)
+        out_handle, dest_path = _open_ingest_destination(original_name, upload_dir)
         size = 0
         too_big = False
         try:
@@ -443,15 +479,18 @@ async def upload_ingest_files(
             })
             continue
 
-        # Stage right away; stage_ingest_file dedupes on file_path, so if the
-        # watcher's debounce already staged this exact path (benign race) this
-        # is a no-op and we just pick up the existing row.
-        stage_ingest_file(db, dest_path)
-        item = (
-            db.query(models.IngestedBook)
-            .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
-            .first()
-        )
+        # No filesystem watcher can race to assign a NULL owner.
+        try:
+            stage_ingest_file(db, dest_path, uploader_id=current_user.id, is_private=(visibility == "private"))
+            item = (
+                db.query(models.IngestedBook)
+                .filter(models.IngestedBook.file_path == os.path.abspath(dest_path))
+                .first()
+            )
+        except Exception:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            raise
         if item is None:
             # Shouldn't happen for a regular file we just wrote; clean up so the
             # ingest folder isn't left with an untracked file.
@@ -460,7 +499,10 @@ async def upload_ingest_files(
             rejected.append({"filename": original_name, "reason": "Staging del file fallito"})
             continue
 
-        log_message("info", "ingest", f"Upload web: file '{os.path.basename(dest_path)}' salvato in ingest")
+        if visibility == "private":
+            log_message("info", "ingest", "Private web upload staged")
+        else:
+            log_message("info", "ingest", f"Upload web: file '{os.path.basename(dest_path)}' salvato in ingest")
         staged.append(_serialize_ingest_item(item))
 
     return {"staged": staged, "rejected": rejected}
@@ -471,7 +513,13 @@ async def import_book_from_ingest(
     payload: schemas.IngestImportRequest,
     db: Session = Depends(database.get_db),
     write_queue: CalibreWriteQueue = Depends(get_write_queue),
+    current_user: models.User = Depends(auth.get_current_user_flexible),
 ):
+    # Authorize ownership and destination BEFORE touching the staging row.
+    item = get_accessible_ingest(db, current_user, payload.id)
+    library_name = require_ingest_destination(db, current_user, item, payload.library)
+    if item.status != "pending":
+        raise HTTPException(status_code=409, detail="Staged item is not pending")
     # Atomically claim the ingest row before doing anything else: two concurrent
     # imports of the same id (e.g. a double-click, or a retried request) must not
     # both pass the "pending" check and race to move the same source file.
@@ -484,7 +532,7 @@ async def import_book_from_ingest(
     if not claimed:
         raise HTTPException(status_code=409, detail="Elemento di ingest già in importazione o non più disponibile")
 
-    item = db.query(models.IngestedBook).filter(models.IngestedBook.id == payload.id).first()
+    item = get_accessible_ingest(db, current_user, payload.id)
     # Compensation state for the `except` below: an import that fails halfway
     # used to leave BOTH a half-built Calibre book (a row with no path and no
     # format — unreachable from every UI, undeletable from the library view)
@@ -497,9 +545,6 @@ async def import_book_from_ingest(
         if not os.path.exists(item.file_path):
             raise HTTPException(status_code=404, detail="File non trovato in ingest")
 
-        library_name = resolve_folder_name(db, payload.library) if payload.library else resolve_default_library_folder(db)
-        if not library_name:
-            raise HTTPException(status_code=404, detail="Nessuna libreria configurata. Creane una prima di continuare.")
         library_path = config.library_path(library_name)
         title = payload.title or item.title
         author = payload.author or item.author or "Autore Sconosciuto"
@@ -566,7 +611,10 @@ async def import_book_from_ingest(
                     image_b64 = base64.b64encode(f.read()).decode("ascii")
                 await write_queue.submit("set_cover", {"book_id": book_id, "image_b64": image_b64}, library_path)
             except Exception as e:
-                log_message("warning", "ingest", f"Impostazione copertina fallita per '{title}': {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book cover processing failed")
+                else:
+                    log_message("warning", "ingest", f"Impostazione copertina fallita per '{title}': {e}")
             # La riga di staging resta (status passa a "confirmed" poco sotto,
             # per audit/duplicate-check — non viene eliminata come su
             # discard), ma il file cover cache non serve più: il libro ha
@@ -592,7 +640,10 @@ async def import_book_from_ingest(
             try:
                 opf_metadata.embed_page_count(library_path, dest_file, item.file_format, pages)
             except Exception as e:
-                log_message("warning", "ingest", f"Embedding pagine nell'OPF fallito per '{dest_file}': {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book OPF embedding failed")
+                else:
+                    log_message("warning", "ingest", f"Embedding pagine nell'OPF fallito per '{dest_file}': {e}")
 
         book_hash_service.upsert_book_hash(db, library_name, book_id, item.file_format, dest_file)
 
@@ -615,17 +666,23 @@ async def import_book_from_ingest(
             try:
                 shutil.rmtree(os.path.dirname(dest_file))
             except OSError as e:
-                log_message("warning", "ingest", f"Rollback: cartella libro non rimossa ({dest_file}): {e}")
+                if item.is_private:
+                    log_message("warning", "ingest", "Private book rollback directory cleanup failed")
+                else:
+                    log_message("warning", "ingest", f"Rollback: cartella libro non rimossa ({dest_file}): {e}")
         if book_id is not None:
             try:
                 await write_queue.submit("delete_book", {"book_id": book_id}, library_path)
             except Exception as e:
-                log_message("warning", "ingest", f"Rollback: libro Calibre {book_id} non rimosso: {e}")
+                log_message("warning", "ingest", f"Rollback: book {book_id} could not be removed")
         item.status = "pending"
         db.commit()
         raise
 
     author_stats_service.safe_mark_author_pages_dirty(db)
-    author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
-    log_message("info", "ingest", f"Imported book '{title}' into library '{library_name}'")
-    return {"status": "ok", "book_id": book_id}
+    if item.is_private:
+        log_message("info", "ingest", "Private book imported")
+    else:
+        author_ingest_hook.maybe_trigger_wiki_scrape(string_to_authors(author))
+        log_message("info", "ingest", f"Imported book '{title}' into library '{library_name}'")
+    return {"status": "ok", "book_id": book_id, "library": library_name}
