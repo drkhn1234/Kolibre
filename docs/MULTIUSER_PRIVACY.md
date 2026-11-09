@@ -71,6 +71,9 @@ end-to-end encryption or secure multi-tenant RAG.
 - Private upload/move log messages avoid book titles and filesystem paths,
   and private additions no longer trigger global automatic Wikipedia author
   scraping.
+- Shared-library settings include an **Access** tab for choosing a user and
+  granting upload-only permissions independently of edit/delete. Existing
+  grants can be updated or revoked according to server-side authority.
 - GitHub Actions compiles the Python backend, runs cross-user isolation
   and crash-recovery tests, and builds the React frontend.
 
@@ -114,8 +117,11 @@ library permissions:
    database and filesystem. Never promise unconditional automatic recovery.
    In particular, a vanished source before the copy-complete checkpoint
    must be examined rather than accepted as a successful move.
-3. Build a proper upload-only UI and ensure old permission clients understand
-   `can_upload`; do not grant destructive `can_edit` just to upload.
+3. The React library settings now provide an **Access** tab for shared libraries
+   to grant upload-only access by default, edit/share/manage separately, and
+   revoke grants when authorized. The backend remains the source of truth.
+   **Still needed:** browser-driven permission UI tests and localization of
+   the new English labels. Never grant destructive `can_edit` just to upload.
 4. CalibreMCP still has process-global library state and unfiltered retrieval.
    **Do not expose it to non-admin users or point it at private collections**
    until MCP authentication, per-operation ACLs and authorized library-index
